@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Despre • TS Viz</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <nav class="nav">
+        <a class="brand" href="index.html">TS Viz</a>
+        <div class="nav-links">
+          <a href="index.html">Acasă</a>
+          <a href="demo.html">Demo</a>
+          <a href="about.html" class="active">Despre</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h1>Despre proiect</h1>
+      <p>Proiect de curs: Metode de vizualizare pentru serii temporale de date satelitare.</p>
+      <p>În curând: integrare cu Flask, API pentru serii NDVI, grafice interactive.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <small>&copy; <span id="y"></span> TS Viz.</small>
+    </div>
+  </footer>
+  <script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>
