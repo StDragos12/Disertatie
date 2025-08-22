@@ -23,7 +23,7 @@ def get_sites(df):
     return sorted(df["site"].unique().tolist())
 
 # --- layout helpers ---
-def shell_html(title:str, body_html:str) -> str:
+def shell_html(title: str, body_html: str) -> str:
     nav = (
         "<div class='header'><div class='container'><div class='nav'>"
         "<a class='brand' href='/'>NDVI Viz</a>"
@@ -47,26 +47,29 @@ def shell_html(title:str, body_html:str) -> str:
       <main class="container">{body_html}</main>
     </body></html>"""
 
-def fig_page(fig:go.Figure, title:str, intro:str="") -> str:
-    fig.update_layout(template="plotly_white", margin=dict(l=20,r=20,t=50,b=20),
-                      xaxis_title="", yaxis_title="NDVI [0–1]")
+def fig_page(fig: go.Figure, title: str, intro: str = "") -> str:
+    fig.update_layout(
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=50, b=20),
+        xaxis_title="",
+        yaxis_title="NDVI [0–1]"
+    )
+    intro_html = f"<p class='muted'>{intro}</p>" if intro else ""
     return shell_html(
         title,
-        f"<section class='card'><h1>{title}</h1>"
-        f"{('<p class=\"muted\">'+intro+'</p>') if intro else ''}"
-        "<div id='fig'></div></section>"
-        f"<script>const spec={fig.to_json()};Plotly.newPlot('fig',spec.data,spec.layout,{{responsive:true}});</script>"
+        f"<section class='card'><h1>{title}</h1>{intro_html}<div id='fig'></div></section>"
+        f"<script>const spec={fig.to_json()};"
+        "Plotly.newPlot('fig', spec.data, spec.layout, {responsive:true});</script>"
     )
 
 # --- homepage ---
 @app.route("/")
 def home():
-    # randăm pagina din templates/index.html (prezentare + butoane)
     df = load_ndvi()
     sites = get_sites(df)
     return render_template("index.html", sites=sites)
 
-# --- API pentru eventuale integrări ---
+# --- API pentru date brute ---
 @app.route("/api/series")
 def api_series():
     df = load_ndvi()
@@ -136,7 +139,6 @@ def seasonality_all():
 def anomalies_all():
     df = load_ndvi()
     fig = px.line(df, x="date", y="ndvi", color="site", title="NDVI + Anomalii – toate siturile")
-    # marchează anomaliile per site
     for site, sub in df.groupby("site"):
         res = stl_series(sub.set_index("date")["ndvi"])
         resid = res.resid.dropna()
@@ -144,9 +146,11 @@ def anomalies_all():
         idx = z[abs(z) >= 2].index
         if len(idx) > 0:
             vals = sub.set_index("date").loc[idx, "ndvi"]
-            fig.add_scatter(x=vals.index, y=vals.values, mode="markers",
-                            marker=dict(size=9, symbol="diamond"),
-                            name=f"Anomalii – {site}")
+            fig.add_scatter(
+                x=vals.index, y=vals.values, mode="markers",
+                marker=dict(size=9, symbol="diamond"),
+                name=f"Anomalii – {site}"
+            )
     return fig_page(fig, "Anomalii (STL, |z|≥2) – toate siturile",
                     "Anomalii = valori neobișnuite ale reziduurilor după STL (|z|≥2).")
 
