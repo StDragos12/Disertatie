@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bine ați venit • NDVI Viz</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="container nav">
+      <a class="brand" href="/">NDVI Viz</a>
+      <nav class="nav-links">
+        <a href="/toate">Compară toate</a>
+        <a href="/padure">Pădure</a>
+        <a href="/agricol">Agricol</a>
+        <a href="/urban">Urban</a>
+        <a href="/trend">Trend</a>
+        <a href="/seasonality">Sezonalitate</a>
+        <a href="/anomalies">Anomalii</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h1>Bine ați venit pe site-ul meu 👋</h1>
+      <p class="muted">
+        Acesta este proiectul meu de disertație: <strong>Metode de vizualizare pentru serii temporale satelitare</strong>.
+        Folosesc date <strong>Sentinel-2</strong> prin <strong>Google Earth Engine</strong> pentru a calcula indicele
+        <strong>NDVI</strong> (Normalized Difference Vegetation Index) pe trei zone reprezentative:
+        <em>Pădure</em>, <em>Teren Agricol</em> și <em>Urban</em>.
+      </p>
+      <p class="muted">
+        Pipeline: selectez ROI-urile în GEE ➝ calculez NDVI lunar (mediană) cu mască pe SCL (Scene Classification Layer)
+        ➝ export <code>CSV</code> ➝ analizez în <strong>Python/Flask</strong> cu <strong>Plotly</strong> și
+        <strong>STL</strong> (trend + sezonalitate) ➝ detectez <strong>anomalii</strong> (|z|≥2) pe reziduuri.
+      </p>
+      <div class="btn-row">
+        <a class="btn" href="/toate">📊 Compară toate</a>
+        <a class="btn" href="/padure">🌲 Pădure</a>
+        <a class="btn" href="/agricol">🌾 Agricol</a>
+        <a class="btn" href="/urban">🏙️ Urban</a>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Despre date</h2>
+        <ul>
+          <li>Sentinel-2 SR (Harmonized), benzi B8/B4 ➝ NDVI</li>
+          <li>Mască nori/umbră: SCL (clase „bune” 4,5,6,7,11)</li>
+          <li>Agregare <strong>lună de lună</strong> (median)</li>
+          <li>Export CSV din GEE: <code>date, site, ndvi</code></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Analize</h2>
+        <ul>
+          <li>Trend (STL) – evoluție pe termen lung</li>
+          <li>Sezonalitate anuală (STL, period=12)</li>
+          <li>Anomalii: reziduuri cu |z| ≥ 2</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
