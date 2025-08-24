@@ -26,17 +26,21 @@
   <main class="container">
     <section class="card">
       <h1>Bine ați venit pe site-ul meu 👋</h1>
-      <p class="muted">
-        Acesta este proiectul meu de disertație: <strong>Metode de vizualizare pentru serii temporale satelitare</strong>.
-        Folosesc date <strong>Sentinel-2</strong> prin <strong>Google Earth Engine</strong> pentru a calcula indicele
-        <strong>NDVI</strong> (Normalized Difference Vegetation Index) pe trei zone reprezentative:
-        <em>Pădure</em>, <em>Teren Agricol</em> și <em>Urban</em>.
-      </p>
+     <p class="muted">
+    Aplicația prezintă metode de <strong>vizualizare și analiză</strong> pentru serii temporale satelitare,
+    utilizând indicele <strong>NDVI</strong> (Normalized Difference Vegetation Index), calculat pe baza datelor
+    Sentinel-2 furnizate prin Google Earth Engine. 
+    </p>
       <p class="muted">
         Pipeline: selectez ROI-urile în GEE ➝ calculez NDVI lunar (mediană) cu mască pe SCL (Scene Classification Layer)
         ➝ export <code>CSV</code> ➝ analizez în <strong>Python/Flask</strong> cu <strong>Plotly</strong> și
         <strong>STL</strong> (trend + sezonalitate) ➝ detectez <strong>anomalii</strong> (|z|≥2) pe reziduuri.
       </p>
+       <p class="muted">
+    Sunt analizate trei regiuni distincte: <em>Pădure</em>, <em>Teren Agricol</em> și <em>Zonă Urbană</em>, 
+    pentru a evidenția diferențele de comportament ale vegetației. Se includ grafice comparative, 
+    componente de trend și sezonalitate, precum și detecția anomaliilor.
+  </p>
       <div class="btn-row">
         <a class="btn" href="/toate">📊 Compară toate</a>
         <a class="btn" href="/padure">🌲 Pădure</a>
