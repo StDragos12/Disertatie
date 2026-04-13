@@ -14,15 +14,20 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - id: auth
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/343145196185/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: github-deploy@plucky-environs-416709.iam.gserviceaccount.com
 
-      - uses: google-github-actions/deploy-appengine@v3
-        with:
-          project_id: plucky-environs-416709
-          deliverables: app.yaml
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify gcloud
+        run: gcloud info
+
+      - name: Deploy to App Engine
+        run: gcloud app deploy app.yaml --project=plucky-environs-416709 --quiet
