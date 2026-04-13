@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body class="app-shell">
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+  <div class="bg-grid"></div>
+
+  <div class="header glass-header">
+    <div class="container nav-container">
+      <div class="nav">
+        <a class="brand brand-animated" href="/">
+          <span>NDVI</span><span>Viz</span>
+        </a>
+
+        <div class="nav-links">
+          {{ nav_html|safe }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="container page-container page-enter">
+    {{ content|safe }}
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

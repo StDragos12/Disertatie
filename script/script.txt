@@ -1,0 +1,103 @@
+// ==========================
+// NDVI lunar pentru 3 ROI-uri din Bucuresti / Ilfov
+// Export CSV pentru Flask app
+// ==========================
+
+var startDate = ee.Date('2019-01-01');
+var endDate   = ee.Date('2024-12-31');
+
+// ROI-uri
+var parcPt = ee.Geometry.Point([26.0789, 44.4782]);
+var parc = parcPt.buffer(600).bounds();
+
+var urbanPt = ee.Geometry.Point([26.1025, 44.4350]);
+var urban = urbanPt.buffer(600).bounds();
+
+var agricolPt = ee.Geometry.Point([26.2550, 44.4700]);
+var agricol = agricolPt.buffer(700).bounds();
+
+var rois = ee.FeatureCollection([
+  ee.Feature(parc,    {site: 'ParcBucuresti'}),
+  ee.Feature(urban,   {site: 'UrbanCentral'}),
+  ee.Feature(agricol, {site: 'AgricolIlfov'})
+]);
+
+Map.centerObject(rois, 10);
+Map.addLayer(parc, {color: '00aa00'}, 'ParcBucuresti');
+Map.addLayer(urban, {color: '999999'}, 'UrbanCentral');
+Map.addLayer(agricol, {color: 'ffaa00'}, 'AgricolIlfov');
+
+function maskS2SCL(image) {
+  var scl = image.select('SCL');
+
+  var good = scl.eq(4)
+    .or(scl.eq(5))
+    .or(scl.eq(6))
+    .or(scl.eq(7))
+    .or(scl.eq(11));
+
+  return image.updateMask(good);
+}
+
+function addNDVI(image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  return image.addBands(ndvi);
+}
+
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate(startDate, endDate)
+  .filterBounds(rois)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
+  .map(maskS2SCL)
+  .map(addNDVI);
+
+var monthCount = endDate.difference(startDate, 'month');
+var months = ee.List.sequence(0, monthCount.subtract(1));
+
+var monthlyFeatures = ee.FeatureCollection(
+  months.map(function(m) {
+    m = ee.Number(m);
+
+    var monthStart = startDate.advance(m, 'month');
+    var monthEnd = monthStart.advance(1, 'month');
+
+    var monthlyCollection = s2.filterDate(monthStart, monthEnd);
+
+    var monthlyComposite = ee.Image(
+      ee.Algorithms.If(
+        monthlyCollection.size().gt(0),
+        monthlyCollection.median().select('NDVI'),
+        ee.Image.constant(-9999).rename('NDVI')
+      )
+    );
+
+    var perRoi = rois.map(function(feat) {
+      var meanNdvi = monthlyComposite.reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: feat.geometry(),
+        scale: 10,
+        maxPixels: 1e9,
+        bestEffort: true
+      }).get('NDVI');
+
+      return ee.Feature(null, {
+        date: monthStart.format('YYYY-MM-dd'),
+        site: feat.get('site'),
+        ndvi: meanNdvi
+      });
+    });
+
+    return perRoi;
+  })
+).flatten();
+
+print('Sentinel-2 collection:', s2);
+print('Număr imagini Sentinel-2:', s2.size());
+print('Monthly NDVI features:', monthlyFeatures.limit(10));
+print('Număr rânduri tabel:', monthlyFeatures.size());
+
+Export.table.toDrive({
+  collection: monthlyFeatures,
+  description: 'ndvi_bucuresti_ilfov_monthly_multi',
+  fileFormat: 'CSV'
+});

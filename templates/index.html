@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NDVI Viz</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app-shell">
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+  <div class="bg-grid"></div>
+
+  <div class="header glass-header">
+    <div class="container nav-container">
+      <div class="nav">
+        <a class="brand brand-animated" href="/">
+          <span>NDVI</span><span>Viz</span>
+        </a>
+        <div class="nav-links">
+          {{ nav_html|safe }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="container page-container page-enter">
+    <section class="card hero-card reveal active">
+      <div class="eyebrow">Framework analitic pentru serii temporale</div>
+      <h1>Platformă de analiză a seriilor temporale</h1>
+
+      <p class="muted">
+        Aplicația prezintă metode de vizualizare și analiză pentru
+        <strong>serii temporale satelitare, sintetice și climatice demonstrative</strong>,
+        având ca studiu principal de caz indicele <strong>NDVI</strong>.
+      </p>
+
+      <p class="muted">
+        Platforma permite analiza comparativă a seriilor
+        <strong>staționare vs. nestaționare</strong>,
+        <strong>sezoniere vs. nesezoniere</strong>
+        și compară date satelitare cu serii sintetice și de mediu.
+      </p>
+
+      <div class="hero-actions">
+        <a class="btn btn-primary magnetic" href="/synthetic">📚 Serii sintetice</a>
+        <a class="btn magnetic" href="/toate">📊 Dashboard NDVI</a>
+        <a class="btn magnetic" href="/methodology">📘 Metodologie</a>
+      </div>
+    </section>
+
+    <section class="stats-strip reveal">
+      <div class="mini-stat-card">
+        <span class="mini-stat-label">Domeniu principal</span>
+        <strong>NDVI Sentinel-2</strong>
+      </div>
+      <div class="mini-stat-card">
+        <span class="mini-stat-label">Serii incluse</span>
+        <strong>Sintetice + climatice + NDVI</strong>
+      </div>
+      <div class="mini-stat-card">
+        <span class="mini-stat-label">Tipuri analizate</span>
+        <strong>Trend / sezonalitate / ADF / forecast</strong>
+      </div>
+    </section>
+
+    <section class="grid-2 stagger-grid">
+      {% for section in home_sections %}
+      <div class="card feature-card reveal">
+        <div class="card-top-line"></div>
+        <h2>{{ section.title }}</h2>
+        <p class="muted">{{ section.description }}</p>
+        <div class="feature-links">
+          {% for link in section.links %}
+          <a class="btn-link secondary magnetic" href="{{ link.href }}">{{ link.label }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </section>
+
+    <section class="card reveal">
+      <div class="card-top-line"></div>
+      <h2>ROI-uri disponibile</h2>
+      <div class="site-pills">
+        {% for site in sites %}
+        <span class="site-pill">{{ site }}</span>
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
