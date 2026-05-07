@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request
 import plotly.graph_objects as go
+from utils.insights import generate_insights
 
 from services.synthetic_service import (
     SYNTHETIC_SERIES_META,
@@ -17,6 +18,13 @@ def generic_series_page(title: str, df_series, current_path: str, value_label: s
     series = df_series.set_index("date")["value"].asfreq("MS")
     station = stationarity_metrics_from_series(series)
     anomaly_count = count_anomalies_in_series(series, period=12)
+
+    insights = generate_insights(series)
+
+    insights_html = "<ul class='insights-list'>"
+    for insight in insights:
+        insights_html += f"<li>{insight}</li>"
+    insights_html += "</ul>"
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -48,21 +56,29 @@ def generic_series_page(title: str, df_series, current_path: str, value_label: s
     p_text = "n/a" if station["p_value"] is None else round(station["p_value"], 4)
 
     content = f"""
-    <section class="card">
-      <h1>{title}</h1>
-      <p class="muted">{df_series["description"].iloc[0]}</p>
-      <div class="method-box">
-        <strong>Categoria:</strong> {df_series["category"].iloc[0]}<br>
-        <strong>Număr observații:</strong> {len(df_series)}<br>
-        <strong>ADF statistic:</strong> {adf_text}<br>
-        <strong>p-value:</strong> {p_text}<br>
-        <strong>Interpretare:</strong> {station["stationary"]}<br>
-        <strong>Anomalii STL:</strong> {anomaly_count}
-      </div>
-    </section>
-    {figure_card(fig, f"Serie temporală – {title}", "Vizualizarea seriei.", section_id=f"{series_kind}_main", yaxis_title=value_label)}
-    {extra_sections}
-    """
+<section class="card">
+  <h1>{title}</h1>
+  <p class="muted">{df_series["description"].iloc[0]}</p>
+
+  <div class="method-box">
+    <strong>Categoria:</strong> {df_series["category"].iloc[0]}<br>
+    <strong>Număr observații:</strong> {len(df_series)}<br>
+    <strong>ADF statistic:</strong> {adf_text}<br>
+    <strong>p-value:</strong> {p_text}<br>
+    <strong>Interpretare:</strong> {station["stationary"]}<br>
+    <strong>Anomalii STL:</strong> {anomaly_count}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Interpretare automată</h2>
+  {insights_html}
+</section>
+
+{figure_card(fig, f"Serie temporală – {title}", "Vizualizarea seriei.", section_id=f"{series_kind}_main", yaxis_title=value_label)}
+
+{extra_sections}
+"""
 
     return render_template(
         "base.html",

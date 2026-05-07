@@ -49,6 +49,10 @@ SITE_LABELS = {
 NAV_ITEMS = [
     {"label": "Acasă", "href": "/"},
     {"label": "Catalog serii", "href": "/series-catalog"},
+    {"label": "Analiză comparativă", "href": "/compare-series"},
+    {"label": "ML Features", "href": "/ml-features"},
+    {"label": "Indici spectrali", "href": "/spectral-indices"},
+    {"label": "Cross-Index", "href": "/cross-index-analysis"},
     {"label": "ROI", "href": "/roi"},
     {
         "label": "Analiză",
@@ -129,7 +133,7 @@ HOME_SECTIONS = [
             {"label": "Statistici", "href": "/stats"},
             {"label": "Staționaritate", "href": "/stationarity"},
             {"label": "Decompose", "href": "/decompose"},
-            {"label": "Anomalii", "href": "/anomalies"},
+            {"label": "Compare Series", "href": "/compare-series"},
         ],
     },
 ]

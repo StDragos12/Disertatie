@@ -18,7 +18,10 @@ def render_nav(current_path: str) -> str:
             )
             continue
 
-        dropdown_active = any(is_active_path(child["href"], current_path) for child in item["children"])
+        dropdown_active = any(
+            is_active_path(child["href"], current_path)
+            for child in item["children"]
+        )
         active_class = "active" if dropdown_active else ""
 
         child_links = "".join(

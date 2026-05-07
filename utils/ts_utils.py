@@ -88,3 +88,79 @@ def mape(y_true: pd.Series, y_pred: pd.Series) -> float:
     if valid.sum() == 0:
         return np.nan
     return float(np.mean(np.abs((y[valid] - p[valid]) / y[valid])) * 100)
+
+
+def extract_features(series: pd.Series) -> dict:
+    station = stationarity_metrics_from_series(series)
+    anomalies = count_anomalies_in_series(series, period=12)
+
+    return {
+        "mean": float(series.mean()),
+        "std": float(series.std(ddof=0)),
+        "min": float(series.min()),
+        "max": float(series.max()),
+        "amplitude": float(series.max() - series.min()),
+        "adf_pvalue": None if station["p_value"] is None else float(station["p_value"]),
+        "stationary": station["stationary"],
+        "anomalies": int(anomalies),
+    }
+
+
+def classify_series_features(features: dict) -> str:
+    stationary = features["stationary"] == "Staționară"
+    anomalies = features["anomalies"]
+    amplitude = features["amplitude"]
+
+    if stationary and anomalies <= 4 and amplitude < 5:
+        return "Stabilă"
+
+    if (not stationary) and amplitude >= 2:
+        return "Trending"
+
+    return "Mixtă"
+
+
+def _zscore_array(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=float)
+    std = arr.std(ddof=0)
+    if std == 0 or np.isnan(std):
+        return arr - arr.mean()
+    return (arr - arr.mean()) / std
+
+
+def dtw_distance(s1: pd.Series, s2: pd.Series, normalize: bool = True) -> float:
+    a = s1.dropna().values.astype(float)
+    b = s2.dropna().values.astype(float)
+
+    if normalize:
+        a = _zscore_array(a)
+        b = _zscore_array(b)
+
+    n, m = len(a), len(b)
+    dp = np.full((n + 1, m + 1), np.inf)
+    dp[0, 0] = 0.0
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost = abs(a[i - 1] - b[j - 1])
+            dp[i, j] = cost + min(
+                dp[i - 1, j],
+                dp[i, j - 1],
+                dp[i - 1, j - 1],
+            )
+
+    return float(dp[n, m])
+
+
+def pairwise_dtw_matrix(series_items: list[tuple[str, pd.Series]], normalize: bool = True) -> pd.DataFrame:
+    names = [name for name, _ in series_items]
+    matrix = np.zeros((len(series_items), len(series_items)), dtype=float)
+
+    for i, (_, s1) in enumerate(series_items):
+        for j, (_, s2) in enumerate(series_items):
+            if i <= j:
+                d = dtw_distance(s1, s2, normalize=normalize)
+                matrix[i, j] = d
+                matrix[j, i] = d
+
+    return pd.DataFrame(matrix, index=names, columns=names)

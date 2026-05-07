@@ -1,15 +1,20 @@
 import plotly.graph_objects as go
 
 
-def apply_standard_layout(fig: go.Figure, title: str, yaxis_title: str = "Valoare") -> go.Figure:
+def apply_standard_layout(
+    fig: go.Figure,
+    title: str,
+    xaxis_title: str = "Data",
+    yaxis_title: str = "NDVI [0–1]",
+) -> go.Figure:
     fig.update_layout(
         template="plotly_white",
         title=title,
         height=640,
         margin=dict(l=40, r=40, t=70, b=40),
-        xaxis_title="Data",
+        xaxis_title=xaxis_title,
         yaxis_title=yaxis_title,
-        hovermode="x unified",
+        hovermode="closest",
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -26,10 +31,16 @@ def figure_card(
     title: str,
     intro: str = "",
     section_id: str = "fig",
-    yaxis_title: str = "Valoare",
+    xaxis_title: str = "Data",
+    yaxis_title: str = "NDVI [0–1]",
 ) -> str:
     intro_html = f"<p class='muted'>{intro}</p>" if intro else ""
-    fig = apply_standard_layout(fig, title, yaxis_title=yaxis_title)
+    fig = apply_standard_layout(
+        fig,
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+    )
 
     return (
         f"<section class='card'>"
@@ -42,7 +53,3 @@ def figure_card(
         f"</script>"
         f"</section>"
     )
-
-
-def info_page(title: str, html: str) -> str:
-    return f"<section class='card'><h1>{title}</h1>{html}</section>"

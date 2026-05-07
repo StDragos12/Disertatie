@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from utils.insights import generate_insights
 
 from services.ndvi_service import load_ndvi, normalize_site_name, pretty_site_name
 from utils.nav import render_nav
@@ -61,6 +62,45 @@ def padure():
         )
 
     fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Parc București")
+
+    series = prepare_monthly_series(sub)
+    insights = generate_insights(series)
+
+    insights_html = "<ul class='insights-list'>"
+    for insight in insights:
+        insights_html += f"<li>{insight}</li>"
+    insights_html += "</ul>"
+
+    content = f"""
+    <section class="card">
+      <h1>NDVI – Parc București</h1>
+      <p class="muted">
+        Spațiu verde urban: NDVI relativ ridicat, cu sezonalitate moderată.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Interpretare automată</h2>
+      {insights_html}
+    </section>
+
+    {figure_card(
+        fig,
+        "NDVI – Parc București",
+        "Spațiu verde urban: NDVI relativ ridicat, cu sezonalitate moderată.",
+        section_id="padure_fig",
+        yaxis_title="NDVI [0–1]",
+    )}
+    """
+
+    return render_template(
+        "base.html",
+        title="NDVI – Parc București",
+        nav_html=render_nav(request.path),
+        content=content,
+    )
+
+    fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Parc București")
     return render_template(
         "base.html",
         title="NDVI – Parc București",
@@ -88,6 +128,45 @@ def agricol():
         )
 
     fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Agricol Ilfov")
+
+    series = prepare_monthly_series(sub)
+    insights = generate_insights(series)
+
+    insights_html = "<ul class='insights-list'>"
+    for insight in insights:
+        insights_html += f"<li>{insight}</li>"
+    insights_html += "</ul>"
+
+    content = f"""
+    <section class="card">
+      <h1>NDVI – Agricol Ilfov</h1>
+      <p class="muted">
+        Teren agricol: sezonalitate puternică, cu variații clare între iarnă și vară.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Interpretare automată</h2>
+      {insights_html}
+    </section>
+
+    {figure_card(
+        fig,
+        "NDVI – Agricol Ilfov",
+        "Teren agricol: sezonalitate puternică, cu variații clare între iarnă și vară.",
+        section_id="agricol_fig",
+        yaxis_title="NDVI [0–1]",
+    )}
+    """
+
+    return render_template(
+        "base.html",
+        title="NDVI – Agricol Ilfov",
+        nav_html=render_nav(request.path),
+        content=content,
+    )
+
+    fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Agricol Ilfov")
     return render_template(
         "base.html",
         title="NDVI – Agricol Ilfov",
@@ -113,6 +192,45 @@ def urban():
             nav_html=render_nav(request.path),
             content="<section class='card'><h1>NDVI – Urban Central</h1><p>Nu există date pentru acest sit.</p></section>",
         )
+
+    fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Urban Central")
+
+    series = prepare_monthly_series(sub)
+    insights = generate_insights(series)
+
+    insights_html = "<ul class='insights-list'>"
+    for insight in insights:
+        insights_html += f"<li>{insight}</li>"
+    insights_html += "</ul>"
+
+    content = f"""
+    <section class="card">
+      <h1>NDVI – Urban Central</h1>
+      <p class="muted">
+        Zonă urbană densă: NDVI scăzut și variații mai reduse.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Interpretare automată</h2>
+      {insights_html}
+    </section>
+
+    {figure_card(
+        fig,
+        "NDVI – Urban Central",
+        "Zonă urbană densă: NDVI scăzut și variații mai reduse.",
+        section_id="urban_fig",
+        yaxis_title="NDVI [0–1]",
+    )}
+    """
+
+    return render_template(
+        "base.html",
+        title="NDVI – Urban Central",
+        nav_html=render_nav(request.path),
+        content=content,
+    )
 
     fig = px.line(sub, x="date", y="ndvi", markers=True, title="NDVI – Urban Central")
     return render_template(
