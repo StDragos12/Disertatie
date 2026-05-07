@@ -47,11 +47,11 @@ def series_catalog():
         nav_html=render_nav(request.path),
         content="""
         <section class="card reveal active">
-            <h1>Catalog de serii temporale</h1>
+            <h1>Catalog de serii temporale și module analitice</h1>
             <p class="muted">
-                Seriile sunt organizate în funcție de proprietățile lor statistice:
-                <strong>staționaritate</strong>, <strong>sezonalitate</strong> și
-                <strong>tipul datelor</strong> (sintetice, climatice sau NDVI reale).
+                Seriile și modulele sunt organizate în funcție de proprietățile lor statistice,
+                tipul datelor și metodele de analiză aplicate: staționaritate, sezonalitate,
+                indici spectrali, reducere dimensională, anomalii și forecast.
             </p>
         </section>
 
@@ -91,6 +91,51 @@ def series_catalog():
                 <ul>
                     <li><a href="/urban">NDVI urban</a></li>
                     <li><a href="/padure">NDVI parc</a></li>
+                </ul>
+            </div>
+
+            <div class="catalog-card">
+                <h2>Analiză multispectrală</h2>
+                <p class="muted">
+                    Comparație între mai mulți indici spectrali calculați pe aceleași ROI-uri.
+                </p>
+                <ul>
+                    <li><a href="/spectral-indices">Indici spectrali</a></li>
+                    <li><a href="/cross-index-analysis">Cross-Index Analysis</a></li>
+                </ul>
+            </div>
+
+            <div class="catalog-card">
+                <h2>Reducere dimensionalitate</h2>
+                <p class="muted">
+                    Transformarea ferestrelor de serie temporală în reprezentări 2D pentru explorare vizuală.
+                </p>
+                <ul>
+                    <li><a href="/ml-features">ML Features</a></li>
+                </ul>
+            </div>
+
+            <div class="catalog-card">
+                <h2>Anomalii și componente</h2>
+                <p class="muted">
+                    Analiza trendului, sezonalității și punctelor neobișnuite din seriile NDVI.
+                </p>
+                <ul>
+                    <li><a href="/anomalies">Anomalii STL</a></li>
+                    <li><a href="/decompose">Decompose STL</a></li>
+                    <li><a href="/trend">Trend</a></li>
+                    <li><a href="/seasonality">Sezonalitate</a></li>
+                </ul>
+            </div>
+
+            <div class="catalog-card">
+                <h2>Forecast</h2>
+                <p class="muted">
+                    Estimarea evoluției viitoare a seriilor NDVI prin modele statistice și deep learning.
+                </p>
+                <ul>
+                    <li><a href="/forecast-arima">Forecast ARIMA/SARIMA</a></li>
+                    <li><a href="/forecast-lstm">Forecast LSTM</a></li>
                 </ul>
             </div>
 
@@ -1198,8 +1243,7 @@ def cross_index_analysis_page():
           <div class="method-box">
             <strong>Rol metodologic:</strong><br>
             Analiza cross-index ajută la identificarea indicilor redundanți și a indicilor
-            complementari. Astfel, aplicația nu se limitează la NDVI, ci analizează
-            comportamentul multispectral al vegetației.
+            complementari. 
           </div>
         </section>
         """,
