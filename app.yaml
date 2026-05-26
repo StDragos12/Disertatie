@@ -5,6 +5,7 @@ instance_class: F4_1G
 
 env_variables:
   GCS_BUCKET_NAME: "ndvi-spectral-arrays-plucky-environs-416709"
+  GOOGLE_CLOUD_PROJECT: "plucky-environs-416709"
 
 automatic_scaling:
   min_instances: 1

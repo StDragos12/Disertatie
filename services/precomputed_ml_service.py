@@ -77,7 +77,9 @@ def load_precomputed_ml_payload(index_name: str, roi: str, pixel_count: int) -> 
         pixel_count
     )
 
-    client = storage.Client()
+    client = storage.Client(
+    project=os.getenv("GOOGLE_CLOUD_PROJECT", "plucky-environs-416709")
+)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
 
