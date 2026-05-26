@@ -14,6 +14,10 @@ from services.indices_service import (
     INDEX_DESCRIPTIONS,
     smooth_series,
 )
+from services.precomputed_ml_service import (
+    DEFAULT_PIXEL_COUNTS,
+    load_precomputed_ml_payload,
+)
 from config import HOME_SECTIONS, ROI_INFO
 from services.ndvi_service import load_ndvi, get_sites, pretty_site_name
 from services.synthetic_service import generate_synthetic_series, generate_temperature_demo_series
@@ -314,42 +318,6 @@ def roi_page():
 
 @main_bp.route("/ml-features")
 def ml_features_page():
-
-    try:
-        from sklearn.cluster import KMeans
-        from sklearn.decomposition import PCA
-        from sklearn.manifold import TSNE
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.metrics import (
-            silhouette_score,
-            calinski_harabasz_score,
-            davies_bouldin_score,
-        )
-        import plotly.express as px
-
-        try:
-            import umap
-            umap_available = True
-        except Exception:
-            umap_available = False
-
-    except Exception:
-        return render_template(
-            "base.html",
-            title="ML pe pixeli",
-            nav_html=render_nav(request.path),
-            content="""
-            <section class="card reveal active">
-              <h1>Analiză ML pe pixeli</h1>
-              <p class="muted">
-                Lipsesc dependențe ML. Verifică instalarea pachetelor scikit-learn, plotly, tslearn, umap-learn și scipy.
-              </p>
-            </section>
-            """,
-        )
-
-    from services.indices_service import load_index_array
-
     available_indices = [
         "NDVI",
         "NDMI",
@@ -369,491 +337,147 @@ def ml_features_page():
     if roi not in ["roi1", "roi2"]:
         roi = "roi1"
 
-    max_pixels = 1200
-    max_embedding_rows = 1200
-    max_profile_pixels_per_cluster = 450
+    try:
+        pixel_count = int(request.args.get("pixels", "1000"))
+    except Exception:
+        pixel_count = 1000
 
-    window = 12
-    step = 6
-    n_clusters = 4
+    if pixel_count not in DEFAULT_PIXEL_COUNTS:
+        pixel_count = 1000
 
-    arr = load_index_array(selected_index, roi)
+    index_options = ""
 
-    height, width, series_length = arr.shape
+    for index_name in available_indices:
+        selected = "selected" if selected_index == index_name else ""
 
-    flat_pixels = arr.reshape(
-        -1,
-        series_length
-    )
+        index_options += f"""
+        <option value="{index_name}" {selected}>{index_name}</option>
+        """
 
-    valid_fraction = np.isfinite(flat_pixels).mean(axis=1)
-    valid_mask = valid_fraction >= 0.70
+    roi_options = ""
 
-    valid_indices_all = np.where(valid_mask)[0]
-    pixels_all = flat_pixels[valid_mask]
+    for roi_name in ["roi1", "roi2"]:
+        selected = "selected" if roi == roi_name else ""
 
-    if len(pixels_all) == 0:
-        return render_template(
-            "base.html",
-            title="ML pe pixeli",
-            nav_html=render_nav(request.path),
-            content="""
-            <section class="card reveal active">
-              <h1>Analiză ML pe pixeli</h1>
-              <p class="muted">
-                Nu există pixeli validați pentru analiza ML.
-              </p>
-            </section>
-            """,
+        roi_options += f"""
+        <option value="{roi_name}" {selected}>{roi_name.upper()}</option>
+        """
+
+    pixel_options = ""
+
+    for option in DEFAULT_PIXEL_COUNTS:
+        selected = "selected" if pixel_count == option else ""
+
+        pixel_options += f"""
+        <option value="{option}" {selected}>{option} pixeli</option>
+        """
+
+    try:
+        payload = load_precomputed_ml_payload(
+            selected_index,
+            roi,
+            pixel_count,
         )
 
-    total_valid_pixels = len(pixels_all)
-
-    if total_valid_pixels < n_clusters:
+    except Exception as exc:
         return render_template(
             "base.html",
             title="ML pe pixeli",
             nav_html=render_nav(request.path),
             content=f"""
             <section class="card reveal active">
-              <h1>Analiză ML pe pixeli</h1>
-              <p class="muted">
-                Nu există suficienți pixeli validați pentru {n_clusters} clustere.
-              </p>
+                <div class="card-top-line"></div>
+                <h1>Analiză ML pe pixeli</h1>
+
+                <p class="muted">
+                    Rezultatele precompute nu sunt disponibile pentru combinația selectată.
+                </p>
+
+                <form method="get" class="method-box">
+                    <label><strong>Indice spectral:</strong></label><br>
+                    <select name="index" onchange="this.form.submit()" class="select-input">
+                        {index_options}
+                    </select>
+
+                    <br><br>
+
+                    <label><strong>ROI:</strong></label><br>
+                    <select name="roi" onchange="this.form.submit()" class="select-input">
+                        {roi_options}
+                    </select>
+
+                    <br><br>
+
+                    <label><strong>Număr pixeli:</strong></label><br>
+                    <select name="pixels" onchange="this.form.submit()" class="select-input">
+                        {pixel_options}
+                    </select>
+                </form>
+
+                <div class="method-box">
+                    <strong>Detalii:</strong><br>
+                    {exc}
+                </div>
             </section>
             """,
         )
 
-    rng = np.random.default_rng(42)
+    metadata = payload["metadata"]
+    metrics = payload["metrics"]
+    highlights = payload["highlights"]
 
-    if len(pixels_all) > max_pixels:
-        sampled_idx = rng.choice(
-            len(pixels_all),
-            max_pixels,
-            replace=False
-        )
+    fig_cluster_map = px.imshow(
+        payload["cluster_grid"],
+        color_continuous_scale="Turbo",
+        aspect="equal",
+        title="Hartă clustere pixeli",
+        zmin=1,
+        zmax=metadata["n_clusters"],
+    )
 
-        pixels = pixels_all[sampled_idx]
-        valid_indices = valid_indices_all[sampled_idx]
-    else:
-        pixels = pixels_all
-        valid_indices = valid_indices_all
+    fig_cluster_map.update_layout(
+        height=650,
+        xaxis_title="Coloană pixel",
+        yaxis_title="Linie pixel",
+        coloraxis_colorbar_title="Cluster",
+    )
 
-    try:
-        df_dates = load_index_dataframe(selected_index)
-        df_dates = df_dates[df_dates["roi"].str.lower() == roi].copy()
-        df_dates["date"] = pd.to_datetime(df_dates["date"], errors="coerce")
+    fig_risk_map = px.imshow(
+        payload["risk_grid"],
+        color_continuous_scale="Turbo",
+        aspect="equal",
+        title="Hartă risc/anomalie temporală",
+    )
 
-        unique_dates = (
-            df_dates["date"]
-            .dropna()
-            .drop_duplicates()
-            .sort_values()
-            .tolist()
-        )
+    fig_risk_map.update_layout(
+        height=650,
+        xaxis_title="Coloană pixel",
+        yaxis_title="Linie pixel",
+        coloraxis_colorbar_title="Scor anomalie",
+    )
 
-        if len(unique_dates) == series_length:
-            dates = pd.DatetimeIndex(unique_dates)
-        else:
-            dates = pd.date_range(
-                start="2017-01-01",
-                periods=series_length,
-                freq="MS"
+    cluster_profile_fig = go.Figure()
+
+    for profile in payload["cluster_profiles"]:
+        cluster_profile_fig.add_trace(
+            go.Scatter(
+                x=profile["dates"],
+                y=profile["values"],
+                mode="lines",
+                name=profile["label"],
             )
-
-    except Exception:
-        dates = pd.date_range(
-            start="2017-01-01",
-            periods=series_length,
-            freq="MS"
         )
 
-    def make_clean_series(values: np.ndarray) -> pd.Series:
-        series = pd.Series(
-            values.astype(float),
-            index=dates
-        )
-
-        series = series.replace(
-            [np.inf, -np.inf],
-            np.nan
-        )
-
-        if series.isna().mean() > 0.30:
-            return pd.Series(dtype=float)
-
-        series = series.interpolate(
-            method="time"
-        ).bfill().ffill()
-
-        if series.isna().any():
-            return pd.Series(dtype=float)
-
-        return series.astype(float)
-
-    all_rows = []
-    clean_pixel_series = {}
-
-    for local_pixel_id, values in enumerate(pixels):
-
-        original_pixel_id = int(valid_indices[local_pixel_id])
-
-        series = make_clean_series(values)
-
-        if series.empty or len(series) < window:
-            continue
-
-        clean_pixel_series[original_pixel_id] = series
-
-        for start_pos in range(
-            0,
-            len(series) - window + 1,
-            step
-        ):
-
-            sub = series.iloc[
-                start_pos:start_pos + window
-            ]
-
-            features = extract_features(sub)
-
-            all_rows.append({
-                "pixel_id": original_pixel_id,
-                "window_start": sub.index[0].strftime("%Y-%m"),
-                "window_end": sub.index[-1].strftime("%Y-%m"),
-                "mean": features["mean"],
-                "std": features["std"],
-                "amplitude": features["amplitude"],
-                "trend_slope": features["trend_slope"],
-                "anomaly_count": features["anomaly_count"],
-            })
-
-    features_df = pd.DataFrame(all_rows)
-
-    if features_df.empty or len(features_df) < n_clusters:
-        return render_template(
-            "base.html",
-            title="ML pe pixeli",
-            nav_html=render_nav(request.path),
-            content="""
-            <section class="card reveal active">
-              <h1>Analiză ML pe pixeli</h1>
-              <p class="muted">
-                Nu există suficiente date după feature extraction pentru patru clustere.
-              </p>
-            </section>
-            """,
-        )
-
-    feature_cols = [
-        "mean",
-        "std",
-        "amplitude",
-        "trend_slope",
-        "anomaly_count",
-    ]
-
-    X = features_df[feature_cols].astype(float)
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.fillna(X.median(numeric_only=True))
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        random_state=42,
-        n_init=20
+    cluster_profile_fig.update_layout(
+        title=f"Profil temporal mediu pe cluster – {selected_index}",
+        xaxis_title="Data",
+        yaxis_title=selected_index,
+        height=560,
+        hovermode="x unified",
+        legend_title_text="Cluster",
     )
 
-    clusters = kmeans.fit_predict(X_scaled)
-
-    iso = IsolationForest(
-        n_estimators=200,
-        contamination=0.03,
-        random_state=42,
-        n_jobs=-1,
-    )
-
-    outlier_labels = iso.fit_predict(X_scaled)
-    risk_scores = -iso.decision_function(X_scaled)
-
-    pca = PCA(
-        n_components=3,
-        random_state=42
-    )
-
-    X_pca = pca.fit_transform(X_scaled)
-
-    pca_df = features_df.copy()
-    pca_df["PC1"] = X_pca[:, 0]
-    pca_df["PC2"] = X_pca[:, 1]
-    pca_df["PC3"] = X_pca[:, 2]
-    pca_df["cluster"] = clusters.astype(int)
-    pca_df["cluster_label"] = [
-        f"Cluster {cluster_id + 1}"
-        for cluster_id in clusters
-    ]
-    pca_df["risk_score"] = risk_scores
-    pca_df["outlier"] = outlier_labels
-
-    silhouette = None
-    calinski = None
-    davies = None
-
-    if len(np.unique(clusters)) > 1 and len(features_df) > n_clusters:
-        try:
-            metric_sample_size = min(
-                1500,
-                len(X_scaled)
-            )
-
-            if len(X_scaled) > metric_sample_size:
-                metric_idx = rng.choice(
-                    len(X_scaled),
-                    metric_sample_size,
-                    replace=False
-                )
-                X_metric = X_scaled[metric_idx]
-                clusters_metric = clusters[metric_idx]
-            else:
-                X_metric = X_scaled
-                clusters_metric = clusters
-
-            silhouette = float(
-                silhouette_score(
-                    X_metric,
-                    clusters_metric
-                )
-            )
-
-            calinski = float(
-                calinski_harabasz_score(
-                    X_metric,
-                    clusters_metric
-                )
-            )
-
-            davies = float(
-                davies_bouldin_score(
-                    X_metric,
-                    clusters_metric
-                )
-            )
-
-        except Exception:
-            silhouette = None
-            calinski = None
-            davies = None
-
-    def build_vectorized_pixel_features(pixel_matrix: np.ndarray) -> pd.DataFrame:
-        matrix = pixel_matrix.astype(float)
-        matrix = np.where(np.isfinite(matrix), matrix, np.nan)
-
-        row_mean = np.nanmean(matrix, axis=1)
-        row_median = np.nanmedian(matrix, axis=1)
-        row_std = np.nanstd(matrix, axis=1)
-        row_min = np.nanmin(matrix, axis=1)
-        row_max = np.nanmax(matrix, axis=1)
-
-        filled = matrix.copy()
-        nan_rows, nan_cols = np.where(~np.isfinite(filled))
-
-        if len(nan_rows) > 0:
-            filled[nan_rows, nan_cols] = row_mean[nan_rows]
-
-        x_time = np.arange(matrix.shape[1], dtype=float)
-        x_centered = x_time - x_time.mean()
-        denom = np.sum(x_centered ** 2)
-
-        y_centered = filled - row_mean[:, None]
-        trend_slope = np.sum(y_centered * x_centered[None, :], axis=1) / denom
-
-        sigma = np.where(row_std > 1e-8, row_std, np.nan)
-        z_values = np.abs(matrix - row_median[:, None]) / sigma[:, None]
-        anomaly_count = np.nansum(z_values > 3.0, axis=1)
-
-        feature_df = pd.DataFrame({
-            "mean": row_mean,
-            "std": row_std,
-            "amplitude": row_max - row_min,
-            "trend_slope": trend_slope,
-            "anomaly_count": anomaly_count,
-        })
-
-        feature_df = feature_df.replace(
-            [np.inf, -np.inf],
-            np.nan
-        )
-
-        feature_df = feature_df.fillna(feature_df.median(numeric_only=True))
-
-        return feature_df
-
-    map_features_df = build_vectorized_pixel_features(pixels_all)
-    X_map_scaled = scaler.transform(map_features_df[feature_cols].astype(float))
-
-    map_clusters = kmeans.predict(X_map_scaled)
-    map_risk_scores = -iso.decision_function(X_map_scaled)
-
-    cluster_grid = np.full(
-        (height, width),
-        np.nan
-    )
-
-    risk_grid = np.full(
-        (height, width),
-        np.nan
-    )
-
-    pixel_cluster_final = {}
-    pixel_risk_avg = {}
-
-    for pos, pixel_id in enumerate(valid_indices_all):
-        pixel_id = int(pixel_id)
-
-        row = pixel_id // width
-        col = pixel_id % width
-
-        assigned_cluster = int(map_clusters[pos])
-        assigned_risk = float(map_risk_scores[pos])
-
-        pixel_cluster_final[pixel_id] = assigned_cluster
-        pixel_risk_avg[pixel_id] = assigned_risk
-
-        cluster_grid[row, col] = assigned_cluster + 1
-        risk_grid[row, col] = assigned_risk
-
-    map_cluster_counts = (
-        pd.Series(map_clusters)
-        .value_counts()
-        .reindex(range(n_clusters), fill_value=0)
-        .to_dict()
-    )
-
-    cluster_summary = (
-        pca_df
-        .groupby("cluster")
-        .agg(
-            windows=("pixel_id", "count"),
-            unique_pixels=("pixel_id", "nunique"),
-            mean_value=("mean", "mean"),
-            std_value=("std", "mean"),
-            amplitude=("amplitude", "mean"),
-            trend_slope=("trend_slope", "mean"),
-            anomaly_count=("anomaly_count", "mean"),
-            risk_score=("risk_score", "mean"),
-        )
-        .reindex(range(n_clusters))
-        .reset_index()
-        .sort_values("cluster")
-    )
-
-    cluster_summary["windows"] = cluster_summary["windows"].fillna(0).astype(int)
-    cluster_summary["unique_pixels"] = cluster_summary["unique_pixels"].fillna(0).astype(int)
-
-    numeric_cols = [
-        "mean_value",
-        "std_value",
-        "amplitude",
-        "trend_slope",
-        "anomaly_count",
-        "risk_score",
-    ]
-
-    for col in numeric_cols:
-        cluster_summary[col] = cluster_summary[col].fillna(0.0)
-
-    cluster_summary["mapped_pixels"] = cluster_summary["cluster"].map(
-        lambda cluster_id: int(map_cluster_counts.get(int(cluster_id), 0))
-    )
-
-    def interpret_cluster(row):
-        if int(row["mapped_pixels"]) == 0:
-            return "cluster fără pixeli mapați"
-
-        risk_q75 = cluster_summary["risk_score"].quantile(0.75)
-        amp_q75 = cluster_summary["amplitude"].quantile(0.75)
-        mean_q25 = cluster_summary["mean_value"].quantile(0.25)
-
-        if row["risk_score"] >= risk_q75:
-            return "zonă de urmărit / comportament atipic"
-
-        if row["amplitude"] >= amp_q75:
-            return "sezonalitate puternică"
-
-        if row["mean_value"] <= mean_q25:
-            return "vegetație redusă"
-
-        if abs(row["trend_slope"]) <= 0.002:
-            return "comportament stabil"
-
-        if row["trend_slope"] > 0:
-            return "tendință ascendentă"
-
-        return "tendință descendentă"
-
-    cluster_summary["interpretation"] = cluster_summary.apply(
-        interpret_cluster,
-        axis=1
-    )
-
-    table_rows = ""
-
-    for _, row_data in cluster_summary.iterrows():
-        table_rows += f"""
-        <tr>
-            <td>Cluster {int(row_data["cluster"]) + 1}</td>
-            <td>{int(row_data["unique_pixels"])}</td>
-            <td>{int(row_data["mapped_pixels"])}</td>
-            <td>{int(row_data["windows"])}</td>
-            <td>{row_data["mean_value"]:.4f}</td>
-            <td>{row_data["amplitude"]:.4f}</td>
-            <td>{row_data["trend_slope"]:.5f}</td>
-            <td>{row_data["risk_score"]:.4f}</td>
-            <td>{row_data["interpretation"]}</td>
-        </tr>
-        """
-
-    dominant_cluster = cluster_summary.sort_values(
-        "mapped_pixels",
-        ascending=False
-    ).iloc[0]
-
-    risk_cluster = cluster_summary.sort_values(
-        "risk_score",
-        ascending=False
-    ).iloc[0]
-
-    seasonal_cluster = cluster_summary.sort_values(
-        "amplitude",
-        ascending=False
-    ).iloc[0]
-
-    low_vegetation_cluster = cluster_summary.sort_values(
-        "mean_value",
-        ascending=True
-    ).iloc[0]
-
-    metric_silhouette = "n/a" if silhouette is None else f"{silhouette:.3f}"
-    metric_calinski = "n/a" if calinski is None else f"{calinski:.1f}"
-    metric_davies = "n/a" if davies is None else f"{davies:.3f}"
-
-    if silhouette is None:
-        cluster_quality_text = "Calitatea separării nu a putut fi evaluată numeric pentru configurația curentă."
-    elif silhouette >= 0.50:
-        cluster_quality_text = "Separarea clusterelor este bună; grupele temporale sunt relativ distincte."
-    elif silhouette >= 0.25:
-        cluster_quality_text = "Separarea clusterelor este moderată; unele zone au comportamente apropiate."
-    else:
-        cluster_quality_text = "Separarea clusterelor este slabă spre moderată; rezultatele trebuie interpretate exploratoriu."
-
-    farmer_recommendation = f"""
-    Pentru interpretare practică, Cluster {int(risk_cluster["cluster"]) + 1} poate fi verificat prioritar,
-    deoarece are cel mai mare scor mediu de anomalie. Cluster {int(low_vegetation_cluster["cluster"]) + 1}
-    indică zone cu valori medii mai reduse ale indicelui, iar Cluster {int(seasonal_cluster["cluster"]) + 1}
-    surprinde cel mai clar variația sezonieră.
-    """
+    pca_df = pd.DataFrame(payload["pca_points"])
 
     fig_pca = px.scatter_3d(
         pca_df,
@@ -863,14 +487,13 @@ def ml_features_page():
         color="cluster_label",
         hover_data={
             "pixel_id": True,
-            "window_start": True,
-            "window_end": True,
             "risk_score": ":.4f",
             "mean": ":.4f",
             "amplitude": ":.4f",
-            "trend_slope": ":.5f",
+            "window_start": True,
+            "window_end": True,
         },
-        title="PCA 3D pe semnături temporale ale pixelilor"
+        title="PCA 3D pe semnături temporale ale pixelilor",
     )
 
     fig_pca.update_layout(
@@ -878,39 +501,10 @@ def ml_features_page():
         legend_title_text="Cluster",
     )
 
-    if len(pca_df) > max_embedding_rows:
-        embedding_idx = rng.choice(
-            len(pca_df),
-            max_embedding_rows,
-            replace=False
-        )
-        embedding_df = pca_df.iloc[embedding_idx].copy()
-        X_embedding = X_scaled[embedding_idx]
-    else:
-        embedding_df = pca_df.copy()
-        X_embedding = X_scaled
-
     tsne_html = ""
 
-    try:
-        perplexity = min(
-            30,
-            max(5, len(X_embedding) // 5)
-        )
-
-        tsne = TSNE(
-            n_components=2,
-            perplexity=perplexity,
-            random_state=42,
-            init="pca",
-            learning_rate="auto",
-        )
-
-        X_tsne = tsne.fit_transform(X_embedding)
-
-        tsne_df = embedding_df.copy()
-        tsne_df["TSNE1"] = X_tsne[:, 0]
-        tsne_df["TSNE2"] = X_tsne[:, 1]
+    if payload.get("tsne_points"):
+        tsne_df = pd.DataFrame(payload["tsne_points"])
 
         fig_tsne = px.scatter(
             tsne_df,
@@ -923,7 +517,7 @@ def ml_features_page():
                 "mean": ":.4f",
                 "amplitude": ":.4f",
             },
-            title=f"t-SNE pe eșantion de {len(tsne_df)} ferestre temporale"
+            title="t-SNE pe semnături temporale",
         )
 
         fig_tsne.update_layout(
@@ -938,213 +532,47 @@ def ml_features_page():
             section_id="tsne_pixels",
         )
 
-    except Exception:
-        tsne_html = """
-        <section class="card reveal active">
-            <h2>t-SNE</h2>
-            <p class="muted">
-                t-SNE nu a putut fi generat pentru configurația curentă.
-            </p>
-        </section>
-        """
-
     umap_html = ""
 
-    if umap_available:
+    if payload.get("umap_points"):
+        umap_df = pd.DataFrame(payload["umap_points"])
 
-        try:
-            reducer = umap.UMAP(
-                n_components=2,
-                random_state=42,
-            )
-
-            X_umap = reducer.fit_transform(X_embedding)
-
-            umap_df = embedding_df.copy()
-            umap_df["UMAP1"] = X_umap[:, 0]
-            umap_df["UMAP2"] = X_umap[:, 1]
-
-            fig_umap = px.scatter(
-                umap_df,
-                x="UMAP1",
-                y="UMAP2",
-                color="cluster_label",
-                hover_data={
-                    "pixel_id": True,
-                    "risk_score": ":.4f",
-                    "mean": ":.4f",
-                    "amplitude": ":.4f",
-                },
-                title=f"UMAP pe eșantion de {len(umap_df)} ferestre temporale"
-            )
-
-            fig_umap.update_layout(
-                height=600,
-                legend_title_text="Cluster",
-            )
-
-            umap_html = figure_card(
-                fig_umap,
-                "UMAP",
-                "Reducere dimensională UMAP aplicată semnăturilor temporale ale pixelilor.",
-                section_id="ml_umap",
-            )
-
-        except Exception:
-            umap_html = """
-            <section class="card reveal active">
-                <h2>UMAP</h2>
-                <p class="muted">
-                    UMAP nu a putut fi generat pentru configurația curentă.
-                </p>
-            </section>
-            """
-
-    else:
-        umap_html = """
-        <section class="card reveal active">
-            <h2>UMAP</h2>
-            <p class="muted">
-                UMAP nu este disponibil în mediul curent. Instalează pachetul umap-learn pentru această vizualizare.
-            </p>
-        </section>
-        """
-
-    cluster_profile_fig = go.Figure()
-    profile_rows = []
-
-    for cluster_id in range(n_clusters):
-
-        cluster_positions = np.where(map_clusters == cluster_id)[0]
-
-        if len(cluster_positions) == 0:
-            continue
-
-        if len(cluster_positions) > max_profile_pixels_per_cluster:
-            cluster_positions = rng.choice(
-                cluster_positions,
-                max_profile_pixels_per_cluster,
-                replace=False
-            )
-
-        profile_values = []
-
-        for pos in cluster_positions:
-            pixel_id = int(valid_indices_all[int(pos)])
-            series_values = flat_pixels[pixel_id].astype(float)
-            series = make_clean_series(series_values)
-
-            if series.empty:
-                continue
-
-            profile_values.append(
-                gaussian_filter(
-                    series.values,
-                    sigma=1
-                )
-            )
-
-        if len(profile_values) == 0:
-            continue
-
-        centroid = np.nanmean(
-            np.vstack(profile_values),
-            axis=0
+        fig_umap = px.scatter(
+            umap_df,
+            x="UMAP1",
+            y="UMAP2",
+            color="cluster_label",
+            hover_data={
+                "pixel_id": True,
+                "risk_score": ":.4f",
+                "mean": ":.4f",
+                "amplitude": ":.4f",
+            },
+            title="UMAP pe semnături temporale",
         )
 
-        profile_series = pd.Series(
-            centroid,
-            index=dates
+        fig_umap.update_layout(
+            height=600,
+            legend_title_text="Cluster",
         )
 
-        profile_rows.append(
-            (
-                f"Cluster {cluster_id + 1}",
-                profile_series
-            )
+        umap_html = figure_card(
+            fig_umap,
+            "UMAP",
+            "Reducere dimensională UMAP aplicată semnăturilor temporale ale pixelilor.",
+            section_id="ml_umap",
         )
 
-        cluster_profile_fig.add_trace(
-            go.Scatter(
-                x=profile_series.index,
-                y=profile_series.values,
-                mode="lines",
-                name=f"Cluster {cluster_id + 1}",
-            )
-        )
+    dtw_html = ""
 
-    cluster_profile_fig.update_layout(
-        title=f"Profil temporal mediu pe cluster – {selected_index}",
-        xaxis_title="Data",
-        yaxis_title=f"{selected_index} [0–1]" if selected_index != "NDMI" else selected_index,
-        height=560,
-        hovermode="x unified",
-        legend_title_text="Cluster",
-    )
-
-    fig_cluster_map = px.imshow(
-        cluster_grid,
-        color_continuous_scale="Turbo",
-        aspect="equal",
-        title="Hartă clustere pixeli",
-        zmin=1,
-        zmax=n_clusters,
-    )
-
-    fig_cluster_map.update_layout(
-        height=650,
-        xaxis_title="Coloană pixel",
-        yaxis_title="Linie pixel",
-        coloraxis_colorbar_title="Cluster",
-    )
-
-    fig_risk_map = px.imshow(
-        risk_grid,
-        color_continuous_scale="Turbo",
-        aspect="equal",
-        title="Hartă scor anomalie vegetativă"
-    )
-
-    fig_risk_map.update_layout(
-        height=650,
-        xaxis_title="Coloană pixel",
-        yaxis_title="Linie pixel",
-        coloraxis_colorbar_title="Scor anomalie",
-    )
-
-    cluster_centroids = []
-
-    for cluster_label, profile_series in profile_rows:
-        cluster_centroids.append({
-            "cluster": cluster_label,
-            "series": profile_series.reset_index(drop=True)
-        })
-
-    if len(cluster_centroids) >= 2:
-        dtw_series = [
-            (
-                item["cluster"],
-                item["series"]
-            )
-            for item in cluster_centroids
-        ]
-
-        dtw_matrix = pairwise_dtw_matrix(
-            dtw_series
-        )
-
-        dtw_labels = [
-            item["cluster"]
-            for item in cluster_centroids
-        ]
-
+    if payload.get("dtw", {}).get("matrix"):
         fig_dtw = px.imshow(
-            dtw_matrix,
-            x=dtw_labels,
-            y=dtw_labels,
+            payload["dtw"]["matrix"],
+            x=payload["dtw"]["labels"],
+            y=payload["dtw"]["labels"],
             text_auto=".2f",
             color_continuous_scale="Viridis",
-            title=f"DTW între profilele medii ale clusterelor – {selected_index}"
+            title=f"DTW între profilele medii ale clusterelor – {selected_index}",
         )
 
         fig_dtw.update_layout(
@@ -1161,92 +589,30 @@ def ml_features_page():
             section_id="dtw_clusters",
         )
 
-    else:
-        dtw_html = """
-        <section class="card reveal active">
-            <h2>DTW între clustere</h2>
-            <p class="muted">
-                Nu există suficiente clustere pentru calculul DTW.
-            </p>
-        </section>
-        """
-
-    pixel_std = np.nanstd(pixels_all, axis=1)
-    candidate_mask = np.isfinite(pixel_std) & (pixel_std > 1e-5)
-
-    if candidate_mask.any():
-        candidate_positions = np.where(candidate_mask)[0]
-    else:
-        candidate_positions = np.arange(len(pixels_all))
-
-    candidate_risks = map_risk_scores[candidate_positions]
-
-    risk_position = int(
-        candidate_positions[np.argmax(candidate_risks)]
-    )
-
-    sorted_candidate_positions = candidate_positions[
-        np.argsort(candidate_risks)
-    ]
-
-    representative_position = int(
-        sorted_candidate_positions[len(sorted_candidate_positions) // 2]
-    )
-
-    risk_pixel_id = int(valid_indices_all[risk_position])
-    representative_pixel_id = int(valid_indices_all[representative_position])
-
-    risk_series = make_clean_series(
-        flat_pixels[risk_pixel_id]
-    )
-
-    representative_series = make_clean_series(
-        flat_pixels[representative_pixel_id]
-    )
-
-    risk_series_smooth = pd.Series(
-        gaussian_filter(
-            risk_series.values.astype(float),
-            sigma=1
-        ),
-        index=dates
-    )
-
-    representative_series_smooth = pd.Series(
-        gaussian_filter(
-            representative_series.values.astype(float),
-            sigma=1
-        ),
-        index=dates
-    )
-
-    dtw_pixel_distance = dtw(
-        risk_series_smooth.values,
-        representative_series_smooth.values
-    )
+    pixel_compare = payload["pixel_compare"]
 
     fig_pixel_compare = go.Figure()
 
     fig_pixel_compare.add_trace(
         go.Scatter(
-            x=risk_series_smooth.index,
-            y=risk_series_smooth.values,
+            x=pixel_compare["risk"]["dates"],
+            y=pixel_compare["risk"]["values"],
             mode="lines",
-            name="Pixel de urmărit"
+            name="Pixel de urmărit",
         )
     )
 
     fig_pixel_compare.add_trace(
         go.Scatter(
-            x=representative_series_smooth.index,
-            y=representative_series_smooth.values,
+            x=pixel_compare["representative"]["dates"],
+            y=pixel_compare["representative"]["values"],
             mode="lines",
-            name="Pixel reprezentativ"
+            name="Pixel reprezentativ",
         )
     )
 
     fig_pixel_compare.update_layout(
-        title=f"Pixel de urmărit vs pixel reprezentativ (DTW={dtw_pixel_distance:.2f})",
+        title=f"Pixel de urmărit vs pixel reprezentativ (DTW={pixel_compare['dtw']})",
         xaxis_title="Data",
         yaxis_title=selected_index,
         height=540,
@@ -1254,20 +620,21 @@ def ml_features_page():
         hovermode="x unified",
     )
 
-    index_options = ""
+    cluster_rows = ""
 
-    for index_name in available_indices:
-        selected = "selected" if selected_index == index_name else ""
-        index_options += f"""
-        <option value="{index_name}" {selected}>{index_name}</option>
-        """
-
-    roi_options = ""
-
-    for roi_name in ["roi1", "roi2"]:
-        selected = "selected" if roi == roi_name else ""
-        roi_options += f"""
-        <option value="{roi_name}" {selected}>{roi_name.upper()}</option>
+    for row in payload["cluster_summary"]:
+        cluster_rows += f"""
+        <tr>
+            <td>Cluster {row["cluster"]}</td>
+            <td>{row["sample_pixels"]}</td>
+            <td>{row["mapped_pixels"]}</td>
+            <td>{row["windows"]}</td>
+            <td>{row["mean"]}</td>
+            <td>{row["amplitude"]}</td>
+            <td>{row["trend"]}</td>
+            <td>{row["risk_score"]}</td>
+            <td>{row["interpretation"]}</td>
+        </tr>
         """
 
     return render_template(
@@ -1275,110 +642,105 @@ def ml_features_page():
         title="ML pe pixeli",
         nav_html=render_nav(request.path),
         content=f"""
-
         <section class="card reveal active">
-          <h1>Analiză ML pe pixeli și hartă de risc vegetativ</h1>
+            <div class="card-top-line"></div>
+            <h1>Analiză ML pe pixeli și hartă de risc</h1>
 
-          <p class="muted">
-            Modulul grupează automat pixelii pe baza evoluției temporale a indicelui spectral selectat.
-            Pentru un utilizator practic, precum un fermier sau administrator de teren, rezultatul indică
-            zone cu vegetație stabilă, zone cu variație sezonieră și zone care merită verificate în teren.
-          </p>
+            <p class="muted">
+                Rezultatele sunt preprocesate prin Cloud Run Job și încărcate din Cloud Storage.
+                Pagina afișează rapid hărțile și graficele fără recalcularea live a modelului.
+            </p>
 
-          <form method="get" class="method-box">
-            <label><strong>Indice spectral:</strong></label><br>
-            <select
-                name="index"
-                onchange="this.form.submit()"
-                class="select-input"
-            >
-                {index_options}
-            </select>
+            <form method="get" class="method-box">
+                <label><strong>Indice spectral:</strong></label><br>
+                <select name="index" onchange="this.form.submit()" class="select-input">
+                    {index_options}
+                </select>
 
-            <br><br>
+                <br><br>
 
-            <label><strong>ROI:</strong></label><br>
-            <select
-                name="roi"
-                onchange="this.form.submit()"
-                class="select-input"
-            >
-                {roi_options}
-            </select>
-          </form>
+                <label><strong>ROI:</strong></label><br>
+                <select name="roi" onchange="this.form.submit()" class="select-input">
+                    {roi_options}
+                </select>
 
-          <div class="method-box">
-            <strong>Ce face această analiză?</strong><br><br>
-            Aplicația selectează un eșantion de <strong>{max_pixels}</strong> pixeli pentru antrenarea modelului,
-            extrage caracteristici temporale din ferestre de <strong>{window}</strong> luni și împarte pixelii în
-            <strong>{n_clusters}</strong> clase de comportament. Modelul este apoi aplicat pe toți pixelii validați
-            pentru a genera hărți spațiale complete.
-          </div>
+                <br><br>
 
-          <div class="method-box">
-            <strong>Pipeline ML:</strong><br><br>
-            Pixel spectral
-            → eșantionare pentru antrenare
-            → mapare pe toți pixelii validați
-            → ferestre temporale de {window} luni cu pas {step}
-            → feature extraction
-            → standardizare
-            → K-Means
-            → Isolation Forest
-            → PCA / t-SNE / UMAP
-            → hartă de clustere și hartă de risc.
-          </div>
+                <label><strong>Număr pixeli pentru antrenare:</strong></label><br>
+                <select name="pixels" onchange="this.form.submit()" class="select-input">
+                    {pixel_options}
+                </select>
+            </form>
+
+            <div class="method-box">
+                <strong>Configurație curentă:</strong><br>
+                Indice: <strong>{selected_index}</strong><br>
+                ROI: <strong>{roi.upper()}</strong><br>
+                Eșantion model: <strong>{metadata["pixel_count"]}</strong> pixeli<br>
+                Pixeli validați mapați: <strong>{metadata["mapped_pixels"]}</strong><br>
+                Ferestre temporale: <strong>{metadata["windows_extracted"]}</strong>
+            </div>
         </section>
 
-        <section class="card reveal active">
-            <h2>Rezumat pentru interpretare rapidă</h2>
-
-            <div class="insight-grid reveal active">
-                <div class="insight-card">
-                    <span class="insight-badge cyan">Cluster dominant</span>
-                    <h2>Cluster {int(dominant_cluster["cluster"]) + 1}</h2>
-                    <p>
-                        Reprezintă cea mai extinsă clasă temporală, cu
-                        <strong>{int(dominant_cluster["mapped_pixels"])}</strong> pixeli mapați.
-                    </p>
-                </div>
-
-                <div class="insight-card">
-                    <span class="insight-badge red">Zonă de urmărit</span>
-                    <h2>Cluster {int(risk_cluster["cluster"]) + 1}</h2>
-                    <p>
-                        Are cel mai mare scor mediu de anomalie
-                        (<strong>{float(risk_cluster["risk_score"]):.4f}</strong>).
-                    </p>
-                </div>
-
-                <div class="insight-card">
-                    <span class="insight-badge green">Sezonalitate</span>
-                    <h2>Cluster {int(seasonal_cluster["cluster"]) + 1}</h2>
-                    <p>
-                        Are cea mai mare amplitudine medie
-                        (<strong>{float(seasonal_cluster["amplitude"]):.4f}</strong>).
-                    </p>
-                </div>
-
-                <div class="insight-card">
-                    <span class="insight-badge gray">Vegetație redusă</span>
-                    <h2>Cluster {int(low_vegetation_cluster["cluster"]) + 1}</h2>
-                    <p>
-                        Are cea mai mică valoare medie a indicelui
-                        (<strong>{float(low_vegetation_cluster["mean_value"]):.4f}</strong>).
-                    </p>
-                </div>
+                <section class="card reveal active">
+            <div class="section-heading">
+                <span class="section-kicker">Interpretare automată</span>
+                <h2>Rezumat operațional al analizei</h2>
+                <p class="muted">
+                    Sinteză a principalelor rezultate obținute pentru indicele
+                    <strong>{selected_index}</strong>, regiunea <strong>{roi.upper()}</strong>
+                    și eșantionul de <strong>{metadata["pixel_count"]}</strong> pixeli.
+                </p>
             </div>
 
-            <div class="method-box">
-                <strong>Recomandare practică:</strong><br>
-                {farmer_recommendation}
-            </div>
+            <div class="summary-dashboard">
+                <div class="summary-tile summary-tile-main">
+                    <div class="summary-tile-top">
+                        <span class="summary-icon">01</span>
+                        <span class="summary-label">Cluster dominant</span>
+                    </div>
+                    <h3>Cluster {highlights["dominant_cluster"]}</h3>
+                    <p>
+                        Cea mai extinsă clasă temporală din hartă, cu
+                        <strong>{highlights["dominant_pixels"]}</strong> pixeli mapați.
+                    </p>
+                </div>
 
-            <div class="method-box">
-                <strong>Calitatea separării:</strong><br>
-                {cluster_quality_text}
+                <div class="summary-tile">
+                    <div class="summary-tile-top">
+                        <span class="summary-icon">02</span>
+                        <span class="summary-label warning">Zonă de urmărit</span>
+                    </div>
+                    <h3>Cluster {highlights["risk_cluster"]}</h3>
+                    <p>
+                        Clusterul cu cel mai ridicat scor mediu de anomalie:
+                        <strong>{highlights["risk_score"]}</strong>.
+                    </p>
+                </div>
+
+                <div class="summary-tile">
+                    <div class="summary-tile-top">
+                        <span class="summary-icon">03</span>
+                        <span class="summary-label seasonal">Variabilitate sezonieră</span>
+                    </div>
+                    <h3>Cluster {highlights["seasonal_cluster"]}</h3>
+                    <p>
+                        Clusterul cu cea mai mare amplitudine medie:
+                        <strong>{highlights["seasonal_amplitude"]}</strong>.
+                    </p>
+                </div>
+
+                <div class="summary-tile">
+                    <div class="summary-tile-top">
+                        <span class="summary-icon">04</span>
+                        <span class="summary-label muted-label">Nivel mediu redus</span>
+                    </div>
+                    <h3>Cluster {highlights["low_vegetation_cluster"]}</h3>
+                    <p>
+                        Clusterul cu cea mai mică valoare medie a indicelui:
+                        <strong>{highlights["low_vegetation_mean"]}</strong>.
+                    </p>
+                </div>
             </div>
         </section>
 
@@ -1389,44 +751,20 @@ def ml_features_page():
                 <table class="stats-table">
                     <tbody>
                         <tr>
-                            <td>Indice spectral</td>
-                            <td>{selected_index}</td>
-                        </tr>
-                        <tr>
-                            <td>ROI</td>
-                            <td>{roi.upper()}</td>
-                        </tr>
-                        <tr>
-                            <td>Pixeli validați disponibili</td>
-                            <td>{total_valid_pixels}</td>
-                        </tr>
-                        <tr>
-                            <td>Pixeli eșantionați pentru model</td>
-                            <td>{len(clean_pixel_series)}</td>
-                        </tr>
-                        <tr>
-                            <td>Pixeli mapați în hărți</td>
-                            <td>{len(valid_indices_all)}</td>
-                        </tr>
-                        <tr>
-                            <td>Ferestre temporale extrase</td>
-                            <td>{len(features_df)}</td>
-                        </tr>
-                        <tr>
-                            <td>Număr clustere folosite</td>
-                            <td>{n_clusters}</td>
-                        </tr>
-                        <tr>
                             <td>Silhouette Score</td>
-                            <td>{metric_silhouette}</td>
+                            <td>{metrics["silhouette"]}</td>
                         </tr>
                         <tr>
                             <td>Calinski-Harabasz</td>
-                            <td>{metric_calinski}</td>
+                            <td>{metrics["calinski_harabasz"]}</td>
                         </tr>
                         <tr>
                             <td>Davies-Bouldin</td>
-                            <td>{metric_davies}</td>
+                            <td>{metrics["davies_bouldin"]}</td>
+                        </tr>
+                        <tr>
+                            <td>Model precompute</td>
+                            <td>Cloud Run Job + Cloud Storage</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1435,6 +773,7 @@ def ml_features_page():
 
         <section class="card reveal active">
             <h2>Profilul clusterelor</h2>
+
             <p class="muted">
                 Interpretarea este automată și se bazează pe medie, amplitudine, trend și scor de anomalie.
             </p>
@@ -1455,7 +794,7 @@ def ml_features_page():
                         </tr>
                     </thead>
                     <tbody>
-                        {table_rows}
+                        {cluster_rows}
                     </tbody>
                 </table>
             </div>
@@ -1464,28 +803,28 @@ def ml_features_page():
         {figure_card(
             fig_cluster_map,
             "Hartă clustere pixeli",
-            "Fiecare pixel valid este mapat înapoi pe grila imaginii pe baza comportamentului temporal dominant. Zonele cu aceeași culoare au evoluții temporale asemănătoare.",
+            "Fiecare pixel valid este mapat pe baza comportamentului temporal dominant.",
             section_id="cluster_map",
         )}
 
         {figure_card(
             fig_risk_map,
             "Hartă risc/anomalie temporală",
-            "Zonele luminoase indică pixeli cu comportament temporal mai atipic conform Isolation Forest. Aceste zone pot fi verificate prioritar.",
+            "Zonele luminoase indică pixeli cu comportament temporal mai atipic conform Isolation Forest.",
             section_id="risk_map",
         )}
 
         {figure_card(
             cluster_profile_fig,
             "Profil temporal mediu pe cluster",
-            "Graficul arată evoluția medie a indicelui pentru fiecare cluster. Este util pentru înțelegerea diferențelor dintre zone.",
+            "Graficul arată evoluția medie a indicelui pentru fiecare cluster.",
             section_id="cluster_profiles",
         )}
 
         {figure_card(
             fig_pca,
             "PCA 3D",
-            "Fiecare punct reprezintă o fereastră temporală extrasă dintr-un pixel. Gruparea punctelor arată similaritatea semnăturilor temporale.",
+            "Fiecare punct reprezintă o fereastră temporală extrasă dintr-un pixel.",
             section_id="pca_3d",
         )}
 
@@ -1498,22 +837,11 @@ def ml_features_page():
         {figure_card(
             fig_pixel_compare,
             "Pixel de urmărit vs pixel reprezentativ",
-            "Comparație temporală între un pixel cu scor ridicat de anomalie și un pixel reprezentativ al comportamentului mediu.",
-            section_id="dtw_pixel"
+            "Comparație temporală între un pixel cu scor ridicat de anomalie și un pixel reprezentativ.",
+            section_id="dtw_pixel",
         )}
-
-        <section class="card reveal active">
-            <h2>Notă de interpretare</h2>
-            <div class="method-box">
-                Analiza este nesupervizată: modelul nu primește etichete reale despre starea terenului.
-                Clusterele și scorurile de anomalie indică diferențe statistice în comportamentul temporal,
-                iar interpretarea lor trebuie corelată cu observații din teren sau cu informații suplimentare.
-            </div>
-        </section>
-
-        """
+        """,
     )
-
 
 
 
