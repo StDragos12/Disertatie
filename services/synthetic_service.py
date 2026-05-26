@@ -1,105 +1,161 @@
 import numpy as np
 import pandas as pd
 
+
 SYNTHETIC_SERIES_META = {
     "white-noise": {
         "title": "White Noise",
-        "category": "Staționară / fără sezonalitate",
+        "category": "Serie staționară",
         "description": (
-            "Serie sintetică de zgomot alb, utilă pentru ilustrarea unei serii aproximativ "
-            "staționare fără structură temporală pronunțată."
+            "Serie sintetică staționară, fără trend și fără sezonalitate, "
+            "utilizată ca exemplu de referință pentru zgomot aleator."
         ),
     },
     "random-walk": {
         "title": "Random Walk",
-        "category": "Nestaționară / fără sezonalitate clară",
+        "category": "Serie nestaționară",
         "description": (
-            "Serie sintetică de tip random walk, clasică pentru demonstrarea "
-            "nestaționarității."
+            "Serie sintetică nestaționară, în care valoarea curentă depinde "
+            "de valoarea anterioară și de o variație aleatoare."
         ),
     },
     "linear-trend": {
         "title": "Trend liniar + zgomot",
-        "category": "Nestaționară / trend",
+        "category": "Serie cu trend",
         "description": (
-            "Serie sintetică cu trend liniar crescător și componentă de zgomot."
+            "Serie sintetică formată dintr-o componentă liniară de trend și "
+            "o componentă aleatoare de zgomot."
         ),
     },
     "seasonal-noise": {
         "title": "Sinusoidală + zgomot",
-        "category": "Sezonieră",
+        "category": "Serie sezonieră",
         "description": (
-            "Serie sintetică sezonieră, bazată pe o componentă sinusoidală anuală și zgomot."
+            "Serie sintetică periodică, cu variație sinusoidală și zgomot, "
+            "utilizată pentru ilustrarea sezonalității."
         ),
     },
     "trend-seasonal": {
-        "title": "Trend + sezonalitate + zgomot",
-        "category": "Exemplu complet",
+        "title": "Trend + sezonalitate",
+        "category": "Serie cu trend și sezonalitate",
         "description": (
-            "Serie sintetică combinată, conținând trend, sezonalitate și zgomot."
+            "Serie sintetică ce combină o componentă de trend cu o componentă "
+            "sezonieră, apropiată de comportamentul unor serii reale."
         ),
     },
 }
 
 
-def build_series_dataframe(series: pd.Series, name: str, category: str, description: str) -> pd.DataFrame:
-    return pd.DataFrame({
-        "date": series.index,
-        "value": series.values,
-        "series_name": name,
-        "category": category,
-        "description": description,
-    })
-
-
 def generate_synthetic_series(series_key: str, periods: int = 72) -> pd.DataFrame:
     if series_key not in SYNTHETIC_SERIES_META:
-        raise ValueError("Cheie serie sintetică invalidă.")
+        series_key = "white-noise"
 
-    meta = SYNTHETIC_SERIES_META[series_key]
     rng = np.random.default_rng(42)
-    dates = pd.date_range(start="2018-01-01", periods=periods, freq="MS")
+    dates = pd.date_range(
+        start="2017-01-01",
+        periods=periods,
+        freq="MS",
+    )
+
     t = np.arange(periods)
 
     if series_key == "white-noise":
-        values = rng.normal(loc=0.0, scale=1.0, size=periods)
-    elif series_key == "random-walk":
-        steps = rng.normal(loc=0.0, scale=0.8, size=periods)
-        values = np.cumsum(steps)
-    elif series_key == "linear-trend":
-        values = 0.45 * t + rng.normal(loc=0.0, scale=1.2, size=periods)
-    elif series_key == "seasonal-noise":
-        values = 8 * np.sin(2 * np.pi * t / 12) + rng.normal(loc=0.0, scale=1.2, size=periods)
-    elif series_key == "trend-seasonal":
-        values = 0.22 * t + 7 * np.sin(2 * np.pi * t / 12) + rng.normal(loc=0.0, scale=1.0, size=periods)
-    else:
-        raise ValueError("Seria sintetică nu este definită.")
+        values = rng.normal(
+            loc=0.0,
+            scale=1.0,
+            size=periods,
+        )
 
-    series = pd.Series(values, index=dates, name="value")
-    return build_series_dataframe(
-        series=series,
-        name=meta["title"],
-        category=meta["category"],
-        description=meta["description"],
+    elif series_key == "random-walk":
+        steps = rng.normal(
+            loc=0.0,
+            scale=0.6,
+            size=periods,
+        )
+        values = np.cumsum(steps)
+
+    elif series_key == "linear-trend":
+        trend = 0.08 * t
+        noise = rng.normal(
+            loc=0.0,
+            scale=0.8,
+            size=periods,
+        )
+        values = trend + noise
+
+    elif series_key == "seasonal-noise":
+        seasonal = 2.5 * np.sin(
+            2 * np.pi * t / 12
+        )
+        noise = rng.normal(
+            loc=0.0,
+            scale=0.5,
+            size=periods,
+        )
+        values = seasonal + noise
+
+    elif series_key == "trend-seasonal":
+        trend = 0.04 * t
+        seasonal = 2.0 * np.sin(
+            2 * np.pi * t / 12
+        )
+        noise = rng.normal(
+            loc=0.0,
+            scale=0.45,
+            size=periods,
+        )
+        values = trend + seasonal + noise
+
+    else:
+        values = rng.normal(
+            loc=0.0,
+            scale=1.0,
+            size=periods,
+        )
+
+    meta = SYNTHETIC_SERIES_META[series_key]
+
+    return pd.DataFrame({
+        "date": dates,
+        "value": values,
+        "series_name": meta["title"],
+        "category": meta["category"],
+        "description": meta["description"],
+    })
+
+
+def generate_temperature_demo_series(periods: int = 72) -> pd.DataFrame:
+    rng = np.random.default_rng(123)
+
+    dates = pd.date_range(
+        start="2017-01-01",
+        periods=periods,
+        freq="MS",
     )
 
-
-def generate_temperature_demo_series(periods: int = 96) -> pd.DataFrame:
-    rng = np.random.default_rng(7)
-    dates = pd.date_range(start="2017-01-01", periods=periods, freq="MS")
     t = np.arange(periods)
 
-    seasonal = 10 * np.sin(2 * np.pi * t / 12 - np.pi / 6)
-    trend = 0.03 * t
-    noise = rng.normal(0, 1.1, size=periods)
-    values = 12 + seasonal + trend + noise
-
-    series = pd.Series(values, index=dates, name="value")
-    return build_series_dataframe(
-        series=series,
-        name="Temperatură lunară demonstrativă",
-        category="Serie climatică demonstrativă",
-        description=(
-            "Serie lunară demonstrativă cu sezonalitate anuală puternică, ușor trend și zgomot."
-        ),
+    seasonal = 10 * np.sin(
+        2 * np.pi * (t - 2) / 12
     )
+
+    trend = 0.015 * t
+
+    noise = rng.normal(
+        loc=0.0,
+        scale=1.2,
+        size=periods,
+    )
+
+    values = 14 + seasonal + trend + noise
+
+    return pd.DataFrame({
+        "date": dates,
+        "value": values,
+        "series_name": "Temperatură lunară demonstrativă",
+        "category": "Serie climatică demonstrativă",
+        "description": (
+            "Serie demonstrativă de temperatură lunară, utilizată pentru "
+            "ilustrarea sezonalității anuale într-un context climatic."
+        ),
+    })

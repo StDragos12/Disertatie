@@ -2,13 +2,51 @@ import numpy as np
 import pandas as pd
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.stattools import adfuller
+from scipy.stats import linregress
 
 
-def prepare_monthly_series(sub: pd.DataFrame, value_col: str = "ndvi") -> pd.Series:
-    s = sub.sort_values("date").set_index("date")[value_col].copy()
-    s = s.asfreq("MS")
-    s = s.interpolate(method="time").ffill().bfill()
-    return s
+def prepare_monthly_series(sub):
+
+    df = sub.copy()
+
+    if "date" not in df.columns:
+        raise ValueError("Lipsește coloana date")
+
+    value_col = None
+
+    for col in ["ndvi", "NDVI", "value"]:
+        if col in df.columns:
+            value_col = col
+            break
+
+    if value_col is None:
+        raise ValueError("Nu există coloană NDVI/value")
+
+    df["date"] = pd.to_datetime(df["date"])
+
+    df = df.sort_values("date")
+
+    # IMPORTANT
+    # agregăm duplicatele pe aceeași lună
+
+    df["month"] = df["date"].dt.to_period("M")
+
+    monthly = (
+        df.groupby("month")[value_col]
+        .mean()
+        .reset_index()
+    )
+
+    monthly["date"] = monthly["month"].dt.to_timestamp()
+
+    series = pd.Series(
+        monthly[value_col].values,
+        index=monthly["date"]
+    )
+
+    series = series.asfreq("MS")
+
+    return series
 
 
 def stl_series(series: pd.Series, period: int = 12):
@@ -22,34 +60,45 @@ def stl_series(series: pd.Series, period: int = 12):
     return STL(s, period=period, robust=True).fit()
 
 
-def stationarity_metrics_from_series(series: pd.Series) -> dict:
-    s = series.dropna().copy()
-    if len(s) < 12:
+def stationarity_metrics_from_series(s):
+
+    s = pd.Series(s).dropna()
+
+    if len(s) < 10:
         return {
-            "adf_stat": None,
             "p_value": None,
-            "lags_used": None,
-            "n_obs": int(len(s)),
-            "stationary": "Date insuficiente",
-            "series": series,
+            "stationary": "Necunoscut"
         }
 
-    result = adfuller(s, autolag="AIC")
-    adf_stat = float(result[0])
-    p_value = float(result[1])
-    lags_used = int(result[2])
-    n_obs = int(result[3])
-    interpretation = "Staționară" if p_value < 0.05 else "Nestaționară"
+    if s.nunique() <= 1:
+        return {
+            "p_value": None,
+            "stationary": "Constantă"
+        }
 
-    return {
-        "adf_stat": adf_stat,
-        "p_value": p_value,
-        "lags_used": lags_used,
-        "n_obs": n_obs,
-        "stationary": interpretation,
-        "series": series,
-    }
+    try:
 
+        result = adfuller(s, autolag="AIC")
+
+        p_value = result[1]
+
+        stationary = (
+            "Staționară"
+            if p_value < 0.05
+            else "Nestaționară"
+        )
+
+        return {
+            "p_value": p_value,
+            "stationary": stationary
+        }
+
+    except Exception:
+
+        return {
+            "p_value": None,
+            "stationary": "Eroare"
+        }
 
 def count_anomalies_in_series(series: pd.Series, period: int = 12) -> int:
     try:
@@ -91,18 +140,35 @@ def mape(y_true: pd.Series, y_pred: pd.Series) -> float:
 
 
 def extract_features(series: pd.Series) -> dict:
-    station = stationarity_metrics_from_series(series)
-    anomalies = count_anomalies_in_series(series, period=12)
+
+    anomalies = count_anomalies_in_series(
+        series,
+        period=12
+    )
+
+    x = np.arange(len(series))
+
+    slope = linregress(
+        x,
+        series.values
+    ).slope
 
     return {
         "mean": float(series.mean()),
+
         "std": float(series.std(ddof=0)),
+
         "min": float(series.min()),
+
         "max": float(series.max()),
-        "amplitude": float(series.max() - series.min()),
-        "adf_pvalue": None if station["p_value"] is None else float(station["p_value"]),
-        "stationary": station["stationary"],
-        "anomalies": int(anomalies),
+
+        "amplitude": float(
+            series.max() - series.min()
+        ),
+
+        "trend_slope": float(slope),
+
+        "anomaly_count": int(anomalies),
     }
 
 

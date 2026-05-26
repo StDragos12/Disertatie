@@ -1,170 +1,338 @@
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / "data" / "ndvi_timeseries_csv_multi.csv"
+
+DATA_PATH = BASE_DIR / "data" / "indices_timeseries.csv"
 
 ROI_INFO = {
-    "ParcBucuresti": {
-        "label": "Parc București",
-        "category": "Spațiu verde urban / parc",
+
+    "roi1": {
+        "label": "ROI 1",
+        "category": "Regiune agricolă / vegetativă",
         "description": (
-            "ROI reprezentativ pentru vegetație urbană densă. "
-            "Este utilizat pentru evidențierea unui comportament NDVI mai ridicat, "
-            "cu sezonalitate moderată."
+            "Regiune extrasă din cube-ul satelitar Sentinel-2 "
+            "utilizată pentru analiza spațio-temporală "
+            "a indicilor spectrali."
         ),
-        "coords": "Poligon definit în setul de date sursă",
-        "expected_ndvi": "Ridicat spre mediu-ridicat, cu vârfuri în sezonul cald",
-        "route": "/padure",
+        "coords": "Date Sentinel-2",
+        "expected_ndvi": (
+            "Variabilitate sezonieră ridicată"
+        ),
+        "route": "/spectral-indices?roi=roi1",
     },
-    "AgricolIlfov": {
-        "label": "Agricol Ilfov",
-        "category": "Teren agricol",
+
+    "roi2": {
+        "label": "ROI 2",
+        "category": "Regiune mixtă",
         "description": (
-            "ROI selectat pentru a surprinde dinamica vegetației agricole. "
-            "Prezintă amplitudini sezoniere mai mari și variații corelate cu ciclurile de vegetație."
+            "Regiune utilizată pentru compararea "
+            "semnăturilor spectrale și detectarea "
+            "anomaliilor vegetative."
         ),
-        "coords": "Poligon definit în setul de date sursă",
-        "expected_ndvi": "Variabil, cu amplitudine sezonieră mare",
-        "route": "/agricol",
-    },
-    "UrbanCentral": {
-        "label": "Urban Central",
-        "category": "Țesut urban dens",
-        "description": (
-            "ROI reprezentativ pentru o zonă urbană cu vegetație redusă. "
-            "Este util pentru comparația cu zonele verzi și cele agricole."
+        "coords": "Date Sentinel-2",
+        "expected_ndvi": (
+            "Variabilitate spectrală moderată"
         ),
-        "coords": "Poligon definit în setul de date sursă",
-        "expected_ndvi": "Scăzut, cu variații mai reduse",
-        "route": "/urban",
+        "route": "/spectral-indices?roi=roi2",
     },
+
 }
 
 SITE_LABELS = {
-    "ParcBucuresti": "Parc București",
-    "UrbanCentral": "Urban Central",
-    "AgricolIlfov": "Agricol Ilfov",
+    "roi1": "ROI 1",
+    "roi2": "ROI 2",
 }
 
 NAV_ITEMS = [
-    {"label": "Acasă", "href": "/"},
-    {"label": "Catalog serii", "href": "/series-catalog"},
-    {"label": "Analiză comparativă", "href": "/compare-series"},
-    {"label": "ML Features", "href": "/ml-features"},
-    {"label": "Indici spectrali", "href": "/spectral-indices"},
-    {"label": "Cross-Index", "href": "/cross-index-analysis"},
-    {"label": "ROI", "href": "/roi"},
+
     {
-        "label": "Analiză",
-        "children": [
-            {"label": "Statistici NDVI", "href": "/stats"},
-            {"label": "Compare Metrics", "href": "/compare-metrics"},
-            {"label": "Staționaritate", "href": "/stationarity"},
-            {"label": "Decompose", "href": "/decompose"},
-            {"label": "Trend", "href": "/trend"},
-            {"label": "Sezonalitate", "href": "/seasonality"},
-            {"label": "Anomalii", "href": "/anomalies"},
-        ],
+        "label": "Acasă",
+        "href": "/",
     },
+
+    {
+        "label": "Catalog serii",
+        "href": "/series-catalog",
+    },
+
+    {
+        "label": "Date satelitare",
+        "children": [
+
+            {
+                "label": "ROI-uri",
+                "href": "/roi",
+            },
+
+            {
+                "label": "Indici spectrali",
+                "href": "/spectral-indices",
+            },
+
+            {
+                "label": "Cross-Index",
+                "href": "/cross-index-analysis",
+            },
+
+        ]
+    },
+
+    {
+        "label": "Analiză temporală",
+        "children": [
+
+            {
+                "label": "Staționaritate",
+                "href": "/stationarity",
+            },
+
+            {
+                "label": "STL Decompose",
+                "href": "/decompose",
+            },
+
+            {
+                "label": "Trend",
+                "href": "/trend",
+            },
+
+            {
+                "label": "Sezonalitate",
+                "href": "/seasonality",
+            },
+
+            {
+                "label": "Anomalii",
+                "href": "/anomalies",
+            },
+
+        ]
+    },
+
+    {
+        "label": "ML & Clustering",
+        "children": [
+
+            {
+                "label": "ML Features",
+                "href": "/ml-features",
+            },
+
+        ]
+    },
+
     {
         "label": "Forecast",
         "children": [
-            {"label": "Forecast ARIMA", "href": "/forecast-arima"},
-            {"label": "Forecast LSTM", "href": "/forecast-lstm"},
-        ],
+
+            {
+                "label": "Forecast ARIMA",
+                "href": "/forecast-arima",
+            },
+
+            {
+                "label": "Forecast LSTM",
+                "href": "/forecast-lstm",
+            },
+
+        ]
     },
+
     {
-        "label": "Seturi de date",
+        "label": "Validare",
         "children": [
-            {"label": "NDVI – toate siturile", "href": "/toate"},
-            {"label": "Parc București", "href": "/padure"},
-            {"label": "Agricol Ilfov", "href": "/agricol"},
-            {"label": "Urban Central", "href": "/urban"},
-            {"label": "White Noise", "href": "/synthetic/white-noise"},
-            {"label": "Random Walk", "href": "/synthetic/random-walk"},
-            {"label": "Trend liniar", "href": "/synthetic/linear-trend"},
-            {"label": "Sinusoidală", "href": "/synthetic/seasonal-noise"},
-            {"label": "Trend + sezonalitate", "href": "/synthetic/trend-seasonal"},
-            {"label": "Temperatură demonstrativă", "href": "/temperature-demo"},
-        ],
+
+            {
+                "label": "White Noise",
+                "href": "/synthetic/white-noise",
+            },
+
+            {
+                "label": "Random Walk",
+                "href": "/synthetic/random-walk",
+            },
+
+            {
+                "label": "Temperatură",
+                "href": "/temperature-demo",
+            },
+
+        ]
     },
-    {"label": "Metodologie", "href": "/methodology"},
+
+    {
+        "label": "Metodologie",
+        "href": "/methodology",
+    },
+
 ]
 
 HOME_SECTIONS = [
+
     {
-        "title": "Serii sintetice",
+        "title": "Date Sentinel-2",
         "description": (
-            "Seturi de date controlate pentru demonstrarea conceptelor fundamentale din analiza seriilor temporale."
+            "Analiză spațio-temporală pe ROI-uri "
+            "și indici spectrali Sentinel-2."
         ),
         "links": [
-            {"label": "White Noise", "href": "/synthetic/white-noise"},
-            {"label": "Random Walk", "href": "/synthetic/random-walk"},
-            {"label": "Trend + sezonalitate", "href": "/synthetic/trend-seasonal"},
+            {
+                "label": "ROI-uri",
+                "href": "/roi",
+            },
+            {
+                "label": "Indici spectrali",
+                "href": "/spectral-indices",
+            },
+            {
+                "label": "Cross-Index",
+                "href": "/cross-index-analysis",
+            },
         ],
     },
+
     {
-        "title": "Serii climatice / de mediu",
+        "title": "Analiză temporală",
         "description": (
-            "Exemple non-satelitare pentru a arăta generalizarea metodologiei."
+            "Trend, sezonalitate, STL decomposition "
+            "și detectarea anomaliilor."
         ),
         "links": [
-            {"label": "Temperatură lunară demonstrativă", "href": "/temperature-demo"},
-            {"label": "Catalog serii", "href": "/series-catalog"},
+            {
+                "label": "Trend",
+                "href": "/trend",
+            },
+            {
+                "label": "STL",
+                "href": "/decompose",
+            },
+            {
+                "label": "ADF",
+                "href": "/stationarity",
+            },
         ],
     },
+
     {
-        "title": "Serii NDVI Sentinel-2",
+        "title": "ML & Clustering",
         "description": (
-            "Studiul principal de caz al aplicației, bazat pe trei ROI-uri cu acoperire diferită."
+            "Reducere dimensională, clustering, "
+            "Isolation Forest și DTW."
         ),
         "links": [
-            {"label": "Compară toate", "href": "/toate"},
-            {"label": "ROI", "href": "/roi"},
-            {"label": "Forecast ARIMA", "href": "/forecast-arima"},
+            {
+                "label": "ML Features",
+                "href": "/ml-features",
+            },
         ],
     },
+
     {
-        "title": "Instrumente analitice",
+        "title": "Forecast",
         "description": (
-            "Statistici descriptive, ADF, STL, anomalii și forecasting."
+            "Predicția seriilor temporale "
+            "folosind ARIMA și LSTM."
         ),
         "links": [
-            {"label": "Statistici", "href": "/stats"},
-            {"label": "Staționaritate", "href": "/stationarity"},
-            {"label": "Decompose", "href": "/decompose"},
-            {"label": "Compare Series", "href": "/compare-series"},
+            {
+                "label": "Forecast ARIMA",
+                "href": "/forecast-arima",
+            },
+            {
+                "label": "Forecast LSTM",
+                "href": "/forecast-lstm",
+            },
         ],
     },
+
 ]
 
 SERIES_CATALOG = [
+
     {
         "group": "Serii sintetice",
-        "description": "Exemple controlate pentru ilustrarea conceptelor de staționaritate, trend și sezonalitate.",
+        "description": (
+            "Serii utilizate pentru validarea "
+            "pipeline-ului de analiză temporală."
+        ),
         "items": [
-            {"label": "White Noise", "href": "/synthetic/white-noise", "tag": "Staționară"},
-            {"label": "Random Walk", "href": "/synthetic/random-walk", "tag": "Nestaționară"},
-            {"label": "Trend liniar + zgomot", "href": "/synthetic/linear-trend", "tag": "Trend"},
-            {"label": "Sinusoidală + zgomot", "href": "/synthetic/seasonal-noise", "tag": "Sezonieră"},
-            {"label": "Trend + sezonalitate", "href": "/synthetic/trend-seasonal", "tag": "Completă"},
+            {
+                "label": "White Noise",
+                "href": "/synthetic/white-noise",
+                "tag": "Staționară"
+            },
+
+            {
+                "label": "Random Walk",
+                "href": "/synthetic/random-walk",
+                "tag": "Nestaționară"
+            },
+
+            {
+                "label": "Trend liniar + zgomot",
+                "href": "/synthetic/linear-trend",
+                "tag": "Trend"
+            },
+
+            {
+                "label": "Sinusoidală + zgomot",
+                "href": "/synthetic/seasonal-noise",
+                "tag": "Sezonieră"
+            },
+
+            {
+                "label": "Trend + sezonalitate",
+                "href": "/synthetic/trend-seasonal",
+                "tag": "Completă"
+            },
+
         ],
     },
+
     {
-        "group": "Serii climatice demonstrative",
-        "description": "Serii non-satelitare pentru a arăta că metodologia poate fi aplicată și altor domenii.",
+        "group": "Serii climatice",
+        "description": (
+            "Date demonstrative pentru validarea "
+            "generalizării metodologiei."
+        ),
         "items": [
-            {"label": "Temperatură lunară demonstrativă", "href": "/temperature-demo", "tag": "Climatică"},
+
+            {
+                "label": "Temperatură lunară",
+                "href": "/temperature-demo",
+                "tag": "Climatică"
+            },
+
         ],
     },
+
     {
-        "group": "Serii NDVI Sentinel-2",
-        "description": "Studiul principal de caz al aplicației, bazat pe trei ROI-uri distincte.",
+        "group": "Serii Sentinel-2",
+        "description": (
+            "Date reale Sentinel-2 utilizate "
+            "pentru analiza spațio-temporală."
+        ),
         "items": [
-            {"label": "Parc București", "href": "/padure", "tag": "NDVI"},
-            {"label": "Agricol Ilfov", "href": "/agricol", "tag": "NDVI"},
-            {"label": "Urban Central", "href": "/urban", "tag": "NDVI"},
-            {"label": "Compară toate", "href": "/toate", "tag": "Dashboard"},
+
+            {
+                "label": "ROI-uri",
+                "href": "/roi",
+                "tag": "Sentinel-2"
+            },
+
+            {
+                "label": "Indici spectrali",
+                "href": "/spectral-indices",
+                "tag": "Indices"
+            },
+
+            {
+                "label": "ML Features",
+                "href": "/ml-features",
+                "tag": "ML"
+            },
+
         ],
     },
+
 ]
