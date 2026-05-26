@@ -1,230 +1,210 @@
+import os
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from scipy.signal import savgol_filter
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-INDICES_DIR = BASE_DIR / "data" / "Indices"
-CSV_PATH = BASE_DIR / "data" / "indices_timeseries.csv"
+try:
+    from google.cloud import storage
+except Exception:
+    storage = None
 
-VALID_INDICES = ["AVI", "EVI", "GNDVI", "NDMI", "NDVI", "SAVI"]
-VALID_ROIS = ["roi1", "roi2"]
+
+DATA_DIR = Path("data")
+INDICES_DIR = DATA_DIR / "Indices"
+INDICES_CSV_PATH = DATA_DIR / "indices_timeseries.csv"
+
 
 INDEX_DESCRIPTIONS = {
     "NDVI": "Normalized Difference Vegetation Index – indică densitatea și sănătatea vegetației.",
-    "EVI": "Enhanced Vegetation Index – mai robust pentru vegetație densă și efecte atmosferice.",
-    "SAVI": "Soil Adjusted Vegetation Index – reduce influența solului în zone cu vegetație rară.",
-    "GNDVI": "Green NDVI – sensibil la conținutul de clorofilă.",
-    "NDMI": "Normalized Difference Moisture Index – indică umiditatea și stresul hidric al vegetației.",
-    "AVI": "Advanced Vegetation Index – evidențiază densitatea vegetației.",
+    "NDMI": "Normalized Difference Moisture Index – evidențiază conținutul de umiditate al vegetației.",
+    "SAVI": "Soil Adjusted Vegetation Index – reduce influența solului asupra estimării vegetației.",
+    "AVI": "Advanced Vegetation Index – evidențiază variațiile vegetației în zone cu acoperire vegetală diferită.",
+    "EVI": "Enhanced Vegetation Index – îmbunătățește sensibilitatea în zone cu vegetație densă.",
+    "GNDVI": "Green Normalized Difference Vegetation Index – folosește banda verde pentru analiza vigorii vegetației.",
+    "GCI": "Green Chlorophyll Index – indicator asociat cu conținutul de clorofilă.",
+    "MSI": "Moisture Stress Index – indicator asociat cu stresul hidric al vegetației.",
 }
 
 
-def _read_indices_csv() -> pd.DataFrame:
-    if not CSV_PATH.exists():
-        return pd.DataFrame(columns=["date", "roi", "value", "index"])
+def _load_indices_csv() -> pd.DataFrame:
+    if not INDICES_CSV_PATH.exists():
+        raise FileNotFoundError(
+            f"Fișierul CSV nu există: {INDICES_CSV_PATH}"
+        )
 
-    df = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(INDICES_CSV_PATH)
 
-    df["date"] = pd.to_datetime(df["date"])
-    df["index"] = df["index"].astype(str)
-    df["roi"] = df["roi"].astype(str)
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    required_columns = {"date", "roi", "index", "value"}
+    missing_columns = required_columns - set(df.columns)
 
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=["date", "roi", "index", "value"])
-
-    return df
-
-
-def list_indices() -> list[str]:
-    available = []
-
-    for idx in VALID_INDICES:
-        if (INDICES_DIR / idx).exists():
-            available.append(idx)
-
-    return available
-
-
-def load_index_array(index_name: str, roi: str) -> np.ndarray:
-    path = INDICES_DIR / index_name / f"{roi}.npy"
-
-    if not path.exists():
-        raise FileNotFoundError(f"Fișierul nu există: {path}")
-
-    arr = np.load(path)
-
-    if arr.ndim != 3:
+    if missing_columns:
         raise ValueError(
-            f"Array-ul trebuie să fie 3D: H x W x T. Shape primit: {arr.shape}"
+            f"Lipsesc coloanele necesare din {INDICES_CSV_PATH}: {missing_columns}"
         )
 
-    return arr
-
-
-def array_to_mean_series(
-    arr: np.ndarray,
-    start_date: str = "2017-01-01"
-) -> pd.Series:
-
-    t_len = arr.shape[2]
-    values = []
-
-    for t in range(t_len):
-        frame = arr[:, :, t].astype(float)
-
-        frame = np.where(np.isfinite(frame), frame, np.nan)
-
-        values.append(float(np.nanmean(frame)))
-
-    dates = pd.date_range(
-        start=start_date,
-        periods=t_len,
-        freq="MS"
+    df["date"] = pd.to_datetime(
+        df["date"],
+        errors="coerce"
     )
 
-    return pd.Series(values, index=dates)
-
-
-def smooth_series(
-    series: pd.Series,
-    window_length: int = 7,
-    polyorder: int = 2
-) -> pd.Series:
-
-    clean = series.dropna()
-
-    if len(clean) < window_length:
-        return series
-
-    smoothed = savgol_filter(
-        clean.values,
-        window_length=window_length,
-        polyorder=polyorder
+    df = df.dropna(
+        subset=["date", "roi", "index", "value"]
     )
 
-    return pd.Series(
-        smoothed,
-        index=clean.index
+    df["index"] = df["index"].astype(str).str.upper()
+    df["roi"] = df["roi"].astype(str).str.lower()
+    df["value"] = pd.to_numeric(
+        df["value"],
+        errors="coerce"
+    )
+
+    df = df.dropna(
+        subset=["value"]
+    )
+
+    return df.sort_values(
+        ["index", "roi", "date"]
     )
 
 
-def load_index_series(
-    index_name: str,
-    roi: str,
-    start_date: str = "2017-01-01"
-) -> pd.Series:
+def list_indices():
+    df = _load_indices_csv()
 
-    df = _read_indices_csv()
+    return sorted(
+        df["index"]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .unique()
+        .tolist()
+    )
 
-    if not df.empty:
-        sub = df[
-            (df["index"] == index_name) &
-            (df["roi"] == roi)
-        ].copy()
 
-        if sub.empty:
-            return pd.Series(dtype=float)
+def load_index_dataframe(index_name: str) -> pd.DataFrame:
+    selected_index = index_name.upper()
 
-        return (
-            sub
-            .sort_values("date")
-            .set_index("date")["value"]
+    df = _load_indices_csv()
+
+    df = df[
+        df["index"] == selected_index
+    ].copy()
+
+    if df.empty:
+        raise ValueError(
+            f"Nu există date pentru indicele {selected_index}."
         )
 
-    arr = load_index_array(index_name, roi)
-
-    return array_to_mean_series(
-        arr,
-        start_date=start_date
+    return df.sort_values(
+        ["roi", "date"]
     )
 
 
-def load_index_dataframe(
-    index_name: str,
-    start_date: str = "2017-01-01"
-) -> pd.DataFrame:
+def build_indices_wide_dataframe(roi: str = "roi1") -> pd.DataFrame:
+    selected_roi = roi.lower()
 
-    rows = []
+    df = _load_indices_csv()
 
-    for roi in VALID_ROIS:
-        try:
-            series = load_index_series(
-                index_name,
-                roi,
-                start_date=start_date
-            )
-
-            for date, value in series.items():
-                rows.append({
-                    "date": date,
-                    "roi": roi,
-                    "value": value,
-                    "index": index_name,
-                })
-
-        except Exception:
-            continue
-
-    return pd.DataFrame(rows)
-
-
-def load_all_indices_dataframe(
-    start_date: str = "2017-01-01"
-) -> pd.DataFrame:
-
-    frames = []
-
-    for index_name in list_indices():
-        try:
-            frames.append(
-                load_index_dataframe(
-                    index_name,
-                    start_date=start_date
-                )
-            )
-        except Exception:
-            pass
-
-    if not frames:
-        return pd.DataFrame(
-            columns=["date", "roi", "value", "index"]
-        )
-
-    return pd.concat(frames, ignore_index=True)
-
-
-def build_cross_index_dataframe(
-    roi: str = "roi1",
-    start_date: str = "2017-01-01"
-) -> pd.DataFrame:
-
-    df = load_all_indices_dataframe(
-        start_date=start_date
-    )
-
-    return df[df["roi"] == roi].copy()
-
-
-def build_indices_wide_dataframe(
-    roi: str = "roi1",
-    start_date: str = "2017-01-01"
-) -> pd.DataFrame:
-
-    df = build_cross_index_dataframe(
-        roi=roi,
-        start_date=start_date
-    )
+    df = df[
+        df["roi"] == selected_roi
+    ].copy()
 
     if df.empty:
         return pd.DataFrame()
 
-    wide = df.pivot_table(
-        index="date",
-        columns="index",
-        values="value",
-        aggfunc="mean",
-    ).sort_index()
+    wide_df = (
+        df
+        .pivot_table(
+            index="date",
+            columns="index",
+            values="value",
+            aggfunc="mean"
+        )
+        .sort_index()
+    )
 
-    return wide.dropna(axis=1, how="all")
+    return wide_df
+
+
+def smooth_series(series: pd.Series, window: int = 3) -> pd.Series:
+    if series.empty:
+        return series
+
+    return (
+        series
+        .rolling(
+            window=window,
+            min_periods=1,
+            center=True
+        )
+        .mean()
+    )
+
+
+def _download_index_array_from_gcs(index_name: str, roi: str) -> Path:
+    bucket_name = os.getenv("GCS_BUCKET_NAME")
+
+    if not bucket_name:
+        raise FileNotFoundError(
+            "Fișierul .npy nu există local și variabila GCS_BUCKET_NAME nu este setată."
+        )
+
+    if storage is None:
+        raise ImportError(
+            "google-cloud-storage nu este instalat. Adaugă google-cloud-storage în requirements.txt."
+        )
+
+    index_name = index_name.upper()
+    roi = roi.lower()
+
+    tmp_dir = Path("/tmp") / "Indices" / index_name
+    tmp_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    tmp_path = tmp_dir / f"{roi}.npy"
+
+    if tmp_path.exists():
+        return tmp_path
+
+    blob_name = f"data/Indices/{index_name}/{roi}.npy"
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    if not blob.exists():
+        raise FileNotFoundError(
+            f"Fișierul nu există în Cloud Storage: gs://{bucket_name}/{blob_name}"
+        )
+
+    blob.download_to_filename(
+        str(tmp_path)
+    )
+
+    return tmp_path
+
+
+def get_index_array_path(index_name: str, roi: str) -> Path:
+    index_name = index_name.upper()
+    roi = roi.lower()
+
+    local_path = INDICES_DIR / index_name / f"{roi}.npy"
+
+    if local_path.exists():
+        return local_path
+
+    return _download_index_array_from_gcs(
+        index_name,
+        roi
+    )
+
+
+def load_index_array(index_name: str, roi: str) -> np.ndarray:
+    path = get_index_array_path(
+        index_name,
+        roi
+    )
+
+    return np.load(path)

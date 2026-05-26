@@ -8,4 +8,9 @@ scikit-learn==1.5.1
 scipy
 tslearn
 umap-learn
+<<<<<<< HEAD
 tensorflow==2.17.0
+=======
+tensorflow==2.17.0
+google-cloud-storage==2.18.2
+>>>>>>> 4cdc8a37 (Load spectral arrays from Cloud Storage)

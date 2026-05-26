@@ -3,6 +3,9 @@ entrypoint: gunicorn -b :$PORT app:app --timeout 300 --workers 1
 
 instance_class: F4_1G
 
+env_variables:
+  GCS_BUCKET_NAME: "ndvi-spectral-arrays-plucky-environs-416709"
+
 automatic_scaling:
   min_instances: 1
   max_instances: 2
