@@ -307,31 +307,82 @@ def compute_payload(index_name, roi, pixel_count):
     profile_rows = []
 
     for cluster_id in range(n_clusters):
-        positions = np.where(map_clusters == cluster_id)[0]
-        if len(positions) == 0:
+        label = f"Cluster {cluster_id + 1}"
+
+        sample_pixel_ids = (
+            pca_df[pca_df["cluster"] == cluster_id]["pixel_id"]
+            .dropna()
+            .astype(int)
+            .drop_duplicates()
+            .tolist()
+    )
+
+        if len(sample_pixel_ids) == 0:
+            positions = np.where(map_clusters == cluster_id)[0]
+
+            if len(positions) > 0:
+                if len(positions) > 500:
+                    positions = rng.choice(positions, 500, replace=False)
+
+                sample_pixel_ids = [
+                int(valid_indices_all[int(pos)])
+                for pos in positions
+            ]
+
+        if len(sample_pixel_ids) == 0:
+            print(f"[WARN] No pixels available for {label}")
             continue
 
-        if len(positions) > 500:
-            positions = rng.choice(positions, 500, replace=False)
+        if len(sample_pixel_ids) > 500:
+            sample_pixel_ids = rng.choice(
+            sample_pixel_ids,
+            500,
+            replace=False
+        ).tolist()
 
         values = []
-        for pos in positions:
-            pixel_id = int(valid_indices_all[int(pos)])
-            series = clean_series(flat_pixels[pixel_id], dates)
+
+        for pixel_id in sample_pixel_ids:
+            series = clean_series(
+            flat_pixels[int(pixel_id)],
+            dates
+        )
+
             if not series.empty:
-                values.append(gaussian_filter(series.values, sigma=1))
+                values.append(
+                gaussian_filter(
+                    series.values.astype(float),
+                    sigma=1
+                )
+            )
 
         if not values:
+            print(f"[WARN] No valid temporal profiles for {label}")
             continue
 
-        centroid = np.nanmean(np.vstack(values), axis=0)
-        label = f"Cluster {cluster_id + 1}"
+        centroid = np.nanmean(
+        np.vstack(values),
+        axis=0
+    )
+
         profiles.append({
-            "label": label,
-            "dates": [d.strftime("%Y-%m-%d") for d in dates],
-            "values": [round_float(x) for x in centroid],
-        })
-        profile_rows.append((label, pd.Series(centroid).reset_index(drop=True)))
+        "label": label,
+        "dates": [
+            d.strftime("%Y-%m-%d")
+            for d in dates
+        ],
+        "values": [
+            round_float(x)
+            for x in centroid
+        ],
+    })
+
+        profile_rows.append(
+        (
+            label,
+            pd.Series(centroid).reset_index(drop=True)
+        )
+    )
 
     if len(profile_rows) >= 2:
         dtw_matrix = matrix_to_list(pairwise_dtw_matrix(profile_rows), digits=4)

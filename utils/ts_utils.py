@@ -230,3 +230,82 @@ def pairwise_dtw_matrix(series_items: list[tuple[str, pd.Series]], normalize: bo
                 matrix[j, i] = d
 
     return pd.DataFrame(matrix, index=names, columns=names)
+
+def amss_distance(series_a, series_b):
+    """
+    Calculează o distanță AMSS simplificată între două serii temporale.
+
+    Ideea este să comparăm forma generală a seriilor după normalizare.
+    Valorile mici indică profile temporale asemănătoare, iar valorile mari
+    indică diferențe mai pronunțate între formele seriilor.
+    """
+    import numpy as np
+    import pandas as pd
+
+    a = pd.Series(series_a).astype(float)
+    b = pd.Series(series_b).astype(float)
+
+    min_len = min(len(a), len(b))
+
+    if min_len == 0:
+        return float("nan")
+
+    a = a.iloc[:min_len].replace([np.inf, -np.inf], np.nan)
+    b = b.iloc[:min_len].replace([np.inf, -np.inf], np.nan)
+
+    a = a.interpolate().bfill().ffill()
+    b = b.interpolate().bfill().ffill()
+
+    if a.isna().any() or b.isna().any():
+        return float("nan")
+
+    a_std = a.std()
+    b_std = b.std()
+
+    if a_std == 0 or b_std == 0:
+        return float(abs(a.mean() - b.mean()))
+
+    a_norm = (a - a.mean()) / a_std
+    b_norm = (b - b.mean()) / b_std
+
+    shape_distance = np.mean(np.abs(a_norm - b_norm))
+
+    slope_a = np.diff(a_norm)
+    slope_b = np.diff(b_norm)
+
+    if len(slope_a) == 0 or len(slope_b) == 0:
+        slope_distance = 0.0
+    else:
+        slope_distance = np.mean(np.abs(slope_a - slope_b))
+
+    return float(0.7 * shape_distance + 0.3 * slope_distance)
+
+
+def pairwise_amss_matrix(profile_rows):
+    """
+    Construiește matricea AMSS între profile temporale.
+
+    profile_rows trebuie să fie o listă de forma:
+    [
+        ("Cluster 1", series_1),
+        ("Cluster 2", series_2),
+        ...
+    ]
+    """
+    import numpy as np
+
+    n = len(profile_rows)
+
+    matrix = np.zeros((n, n), dtype=float)
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                matrix[i, j] = 0.0
+            else:
+                matrix[i, j] = amss_distance(
+                    profile_rows[i][1],
+                    profile_rows[j][1],
+                )
+
+    return matrix

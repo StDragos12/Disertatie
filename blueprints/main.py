@@ -30,6 +30,7 @@ from utils.ts_utils import (
     extract_features,
     classify_series_features,
     pairwise_dtw_matrix,
+    pairwise_amss_matrix,
 )
 
 main_bp = Blueprint("main", __name__)
@@ -587,7 +588,78 @@ def ml_features_page():
             "DTW între clustere",
             "Valorile mici indică profile temporale asemănătoare, iar valorile mari indică diferențe mai pronunțate.",
             section_id="dtw_clusters",
+            xaxis_title="Cluster",
+            yaxis_title="Cluster",
         )
+
+    amss_html = ""
+
+    try:
+        amss_rows = []
+
+        for profile in payload.get("cluster_profiles", []):
+            label = profile["label"]
+            values = pd.Series(profile["values"]).astype(float)
+
+            amss_rows.append(
+                (
+                    label,
+                    values,
+                )
+            )
+
+        if len(amss_rows) >= 2:
+            amss_matrix = pairwise_amss_matrix(
+                amss_rows
+            )
+
+            amss_labels = [
+                item[0]
+                for item in amss_rows
+            ]
+
+            fig_amss = px.imshow(
+                amss_matrix,
+                x=amss_labels,
+                y=amss_labels,
+                text_auto=".2f",
+                color_continuous_scale="Cividis",
+                title=f"AMSS între profilele medii ale clusterelor – {selected_index}",
+            )
+
+            fig_amss.update_layout(
+                height=560,
+                xaxis_title="Cluster",
+                yaxis_title="Cluster",
+                coloraxis_colorbar_title="AMSS",
+            )
+
+            amss_html = figure_card(
+                fig_amss,
+                "AMSS între clustere",
+                (
+                    "Matricea AMSS compară forma generală a profilelor temporale medii. "
+                    "Valorile mici indică evoluții asemănătoare, iar valorile mari indică "
+                    "diferențe mai pronunțate între clustere."
+                ),
+                section_id="amss_clusters",
+                xaxis_title="Cluster",
+                yaxis_title="Cluster",
+            )
+
+    except Exception as exc:
+        amss_html = f"""
+        <section class="card reveal active">
+            <h2>AMSS între clustere</h2>
+            <p class="muted">
+                Matricea AMSS nu a putut fi calculată pentru această selecție.
+            </p>
+            <div class="method-box">
+                <strong>Detalii:</strong><br>
+                {exc}
+            </div>
+        </section>
+        """
 
     pixel_compare = payload["pixel_compare"]
 
@@ -833,6 +905,8 @@ def ml_features_page():
         {umap_html}
 
         {dtw_html}
+
+        {amss_html}
 
         {figure_card(
             fig_pixel_compare,
