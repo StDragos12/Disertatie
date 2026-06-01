@@ -30,4 +30,26 @@ jobs:
         run: gcloud info
 
       - name: Deploy to App Engine
-        run: gcloud app deploy app.yaml --project=plucky-environs-416709 --quiet
+        run: |
+          gcloud app deploy app.yaml \
+            --project=plucky-environs-416709 \
+            --promote \
+            --stop-previous-version \
+            --quiet
+
+      - name: Delete old App Engine versions with no traffic
+        run: |
+          OLD_VERSIONS=$(gcloud app versions list \
+            --service=default \
+            --project=plucky-environs-416709 \
+            --filter="traffic_split=0" \
+            --format="value(version.id)")
+
+          if [ -z "$OLD_VERSIONS" ]; then
+            echo "No old versions to delete."
+          else
+            echo "$OLD_VERSIONS" | xargs -r gcloud app versions delete \
+              --service=default \
+              --project=plucky-environs-416709 \
+              --quiet
+          fi
