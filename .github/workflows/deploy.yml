@@ -17,6 +17,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show repository source
+        run: |
+          echo "Deploying commit:"
+          git rev-parse HEAD
+          echo "Latest commit:"
+          git log -1 --oneline
+          echo "Using app.yaml from repository:"
+          cat app.yaml
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -26,14 +35,7 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Verify deployed source
-        run: |
-          echo "Deploying commit:"
-          git rev-parse HEAD
-          echo "Using app.yaml from repository:"
-          cat app.yaml
-
-      - name: Deploy to App Engine
+      - name: Deploy repository code to App Engine
         run: |
           VERSION_ID="v-${GITHUB_SHA::12}"
 
@@ -43,6 +45,15 @@ jobs:
             --promote \
             --stop-previous-version \
             --quiet
+
+      - name: Verify deployed version
+        run: |
+          VERSION_ID="v-${GITHUB_SHA::12}"
+
+          gcloud app versions describe "$VERSION_ID" \
+            --service=default \
+            --project=plucky-environs-416709 \
+            --format="yaml(id,instanceClass,runtime,automaticScaling,envVariables,servingStatus)"
 
       - name: Delete old App Engine versions with no traffic
         run: |
