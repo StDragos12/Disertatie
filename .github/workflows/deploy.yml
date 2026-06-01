@@ -17,19 +17,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show deployed commit and files
-        run: |
-          echo "Commit deployed:"
-          git rev-parse HEAD
-          echo "Repository files:"
-          ls -la
-          echo "App yaml:"
-          cat app.yaml
-          echo "Check ML page markers:"
-          grep -R "summary-dashboard" blueprints/main.py || true
-          grep -R "Număr pixeli pentru antrenare" blueprints/main.py || true
-          grep -R "F4_1G" app.yaml || true
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -39,14 +26,16 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Verify gcloud
-        run: gcloud info
+      - name: Verify deployed source
+        run: |
+          echo "Deploying commit:"
+          git rev-parse HEAD
+          echo "Using app.yaml from repository:"
+          cat app.yaml
 
       - name: Deploy to App Engine
         run: |
           VERSION_ID="v-${GITHUB_SHA::12}"
-
-          echo "Deploying version: $VERSION_ID"
 
           gcloud app deploy app.yaml \
             --project=plucky-environs-416709 \
@@ -54,15 +43,6 @@ jobs:
             --promote \
             --stop-previous-version \
             --quiet
-
-      - name: Verify deployed version
-        run: |
-          VERSION_ID="v-${GITHUB_SHA::12}"
-
-          gcloud app versions describe "$VERSION_ID" \
-            --service=default \
-            --project=plucky-environs-416709 \
-            --format="yaml(id,instanceClass,runtime,envVariables,automaticScaling,servingStatus)"
 
       - name: Delete old App Engine versions with no traffic
         run: |
