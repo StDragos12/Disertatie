@@ -11,8 +11,20 @@ from services.indices_service import (
     list_indices,
     load_index_dataframe,
     build_indices_wide_dataframe,
+    load_indices_dataframe,
     INDEX_DESCRIPTIONS,
     smooth_series,
+)
+from services.dataset_service import (
+    DEMO_DATASET_ID,
+    build_dataset_options_html,
+    get_dataset_display_name,
+    get_dataset_rois,
+    get_dataset_record,
+    normalize_dataset_id,
+    has_pixel_level_data,
+    read_dataset_status,
+    build_pixel_ml_payload_from_dataset,
 )
 from services.precomputed_ml_service import (
     DEFAULT_PIXEL_COUNTS,
@@ -316,35 +328,185 @@ def roi_page():
 
 
 
+def build_farmer_cluster_interpretation(row, selected_index):
+    """
+    Transformă metricele unui cluster într-o explicație practică.
+
+    Interpretarea este orientativă și este folosită pentru prioritizarea
+    verificărilor în teren, nu pentru diagnostic agronomic final.
+    """
+
+    mean_value = float(row.get("mean", 0))
+    amplitude = float(row.get("amplitude", 0))
+    risk_score = float(row.get("risk_score", 0))
+    trend = str(row.get("trend", "")).lower()
+
+    index_name = selected_index.upper()
+
+    if index_name in ["NDVI", "EVI", "GNDVI", "SAVI", "AVI"]:
+        low_label = "nivel redus de vegetație"
+        good_label = "vegetație mai viguroasă"
+        field_check = (
+            "verificare în teren pentru stres vegetal, sol expus, fertilizare slabă "
+            "sau zone cu dezvoltare mai redusă"
+        )
+    elif index_name == "NDMI":
+        low_label = "nivel redus de umiditate"
+        good_label = "umiditate mai bună a vegetației"
+        field_check = (
+            "verificare în teren pentru posibil deficit de apă, irigare neuniformă "
+            "sau stres hidric"
+        )
+    else:
+        low_label = "nivel redus al indicelui"
+        good_label = "nivel mai ridicat al indicelui"
+        field_check = "verificare în teren pentru diferențe locale față de restul parcelei"
+
+    if risk_score >= 0:
+        priority = "ridicată"
+        priority_class = "priority-high"
+        priority_text = (
+            "zonă prioritară pentru verificare, deoarece are comportament mai atipic "
+            "față de restul regiunii"
+        )
+    elif risk_score >= -0.08:
+        priority = "medie"
+        priority_class = "priority-medium"
+        priority_text = "zonă care merită monitorizată, fără a indica obligatoriu o problemă critică"
+    else:
+        priority = "scăzută"
+        priority_class = "priority-low"
+        priority_text = "zonă relativ stabilă, cu comportament apropiat de restul regiunii"
+
+    if mean_value < 0.25:
+        meaning = f"Clusterul indică {low_label}."
+    elif mean_value < 0.45:
+        meaning = "Clusterul indică o stare intermediară a suprafeței analizate."
+    else:
+        meaning = f"Clusterul indică {good_label}."
+
+    if amplitude > 0.25:
+        seasonality = "variație sezonieră puternică"
+    elif amplitude > 0.10:
+        seasonality = "variație sezonieră moderată"
+    else:
+        seasonality = "variație sezonieră redusă"
+
+    if "desc" in trend or "negativ" in trend:
+        trend_text = "evoluția temporală sugerează o posibilă scădere în timp"
+    elif "asc" in trend or "pozitiv" in trend:
+        trend_text = "evoluția temporală sugerează o posibilă creștere în timp"
+    else:
+        trend_text = "nu se observă o direcție clară a evoluției"
+
+    return {
+        "meaning": meaning,
+        "priority": priority,
+        "priority_class": priority_class,
+        "priority_text": priority_text,
+        "seasonality": seasonality,
+        "trend_text": trend_text,
+        "recommended_action": field_check,
+    }
+
 
 @main_bp.route("/ml-features")
 def ml_features_page():
-    available_indices = [
-        "NDVI",
-        "NDMI",
-        "SAVI",
-        "AVI",
-        "EVI",
-        "GNDVI",
-    ]
+    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
 
-    selected_index = request.args.get("index", "NDVI").upper()
+    # Pentru dataset-uri încărcate de utilizator, ML este disponibil dacă CSV-ul este pixel-level.
+    # Format acceptat: date, roi, index, pixel_id, row, col, value.
+    user_payload = None
+    user_dataset_message = ""
+    if selected_dataset != DEMO_DATASET_ID:
+        try:
+            if has_pixel_level_data(selected_dataset):
+                available_indices = list_indices(dataset_id=selected_dataset)
+                selected_index = request.args.get("index", available_indices[0] if available_indices else "NDVI").upper()
+                if selected_index not in available_indices:
+                    selected_index = available_indices[0] if available_indices else "NDVI"
 
-    if selected_index not in available_indices:
-        selected_index = "NDVI"
+                available_rois = get_dataset_rois(selected_dataset)
+                roi = request.args.get("roi", available_rois[0] if available_rois else "roi1").lower()
+                if roi not in available_rois:
+                    roi = available_rois[0] if available_rois else "roi1"
 
-    roi = request.args.get("roi", "roi1").lower()
+                try:
+                    pixel_count = int(request.args.get("pixels", "1000"))
+                except Exception:
+                    pixel_count = 1000
+                if pixel_count not in DEFAULT_PIXEL_COUNTS:
+                    pixel_count = min(DEFAULT_PIXEL_COUNTS, key=lambda x: abs(x - pixel_count))
 
-    if roi not in ["roi1", "roi2"]:
-        roi = "roi1"
+                user_payload = build_pixel_ml_payload_from_dataset(
+                    selected_dataset, selected_index, roi, pixel_count
+                )
+            else:
+                raise ValueError(
+                    "Datasetul selectat este ROI-level. Pentru ML pe pixeli încarcă un CSV pixel-level cu "
+                    "date, roi, index, pixel_id, row, col, value."
+                )
+        except Exception as exc:
+            dataset_options = build_dataset_options_html(selected_dataset)
+            return render_template(
+                "base.html",
+                title="ML pe pixeli",
+                nav_html=render_nav(request.path),
+                content=f"""
+                <section class="card reveal active">
+                    <div class="card-top-line"></div>
+                    <h1>Analiză ML pe pixeli</h1>
+                    <p class="muted">
+                        Pentru dataset-uri încărcate de utilizator, modulul ML necesită date la nivel de pixel.
+                    </p>
+                    <form method="get" class="method-box">
+                        <label><strong>Dataset:</strong></label><br>
+                        <select name="dataset" onchange="this.form.submit()" class="select-input">
+                            {dataset_options}
+                        </select>
+                    </form>
+                    <div class="method-box">
+                        <strong>Detalii:</strong><br>
+                        {exc}
+                        <br><br>
+                        Format ML acceptat:<br>
+                        <code>date,roi,index,pixel_id,row,col,value</code>
+                        <br><br>
+                        <a class="btn-link" href="/datasets">Încarcă dataset</a>
+                        <a class="btn-link secondary" href="/spectral-indices?dataset={selected_dataset}">Analiză ROI-level</a>
+                        <a class="btn-link secondary" href="/forecast-arima?dataset={selected_dataset}">Forecast</a>
+                    </div>
+                </section>
+                """,
+            )
 
-    try:
-        pixel_count = int(request.args.get("pixels", "1000"))
-    except Exception:
-        pixel_count = 1000
+    if user_payload is None:
+        available_indices = [
+            "NDVI",
+            "NDMI",
+            "SAVI",
+            "AVI",
+            "EVI",
+            "GNDVI",
+        ]
 
-    if pixel_count not in DEFAULT_PIXEL_COUNTS:
-        pixel_count = 1000
+        selected_index = request.args.get("index", "NDVI").upper()
+
+        if selected_index not in available_indices:
+            selected_index = "NDVI"
+
+        roi = request.args.get("roi", "roi1").lower()
+
+        if roi not in ["roi1", "roi2"]:
+            roi = "roi1"
+
+        try:
+            pixel_count = int(request.args.get("pixels", "1000"))
+        except Exception:
+            pixel_count = 1000
+
+        if pixel_count not in DEFAULT_PIXEL_COUNTS:
+            pixel_count = 1000
 
     index_options = ""
 
@@ -356,10 +518,10 @@ def ml_features_page():
         """
 
     roi_options = ""
+    roi_values_for_options = get_dataset_rois(selected_dataset) if selected_dataset != DEMO_DATASET_ID else ["roi1", "roi2"]
 
-    for roi_name in ["roi1", "roi2"]:
+    for roi_name in roi_values_for_options:
         selected = "selected" if roi == roi_name else ""
-
         roi_options += f"""
         <option value="{roi_name}" {selected}>{roi_name.upper()}</option>
         """
@@ -374,11 +536,14 @@ def ml_features_page():
         """
 
     try:
-        payload = load_precomputed_ml_payload(
-            selected_index,
-            roi,
-            pixel_count,
-        )
+        if user_payload is not None:
+            payload = user_payload
+        else:
+            payload = load_precomputed_ml_payload(
+                selected_index,
+                roi,
+                pixel_count,
+            )
 
     except Exception as exc:
         return render_template(
@@ -395,6 +560,13 @@ def ml_features_page():
                 </p>
 
                 <form method="get" class="method-box">
+                    <label><strong>Dataset:</strong></label><br>
+                    <select name="dataset" onchange="this.form.submit()" class="select-input">
+                        {build_dataset_options_html(selected_dataset)}
+                    </select>
+
+                    <br><br>
+
                     <label><strong>Indice spectral:</strong></label><br>
                     <select name="index" onchange="this.form.submit()" class="select-input">
                         {index_options}
@@ -494,7 +666,7 @@ def ml_features_page():
             "window_start": True,
             "window_end": True,
         },
-        title="PCA 3D pe semnături temporale ale pixelilor",
+        title="PCA 3D – vizualizare clustere K-Means",
     )
 
     fig_pca.update_layout(
@@ -693,8 +865,14 @@ def ml_features_page():
     )
 
     cluster_rows = ""
+    farmer_rows = ""
 
     for row in payload["cluster_summary"]:
+        farmer_info = build_farmer_cluster_interpretation(
+            row,
+            selected_index,
+        )
+
         cluster_rows += f"""
         <tr>
             <td>Cluster {row["cluster"]}</td>
@@ -706,6 +884,20 @@ def ml_features_page():
             <td>{row["trend"]}</td>
             <td>{row["risk_score"]}</td>
             <td>{row["interpretation"]}</td>
+        </tr>
+        """
+
+        farmer_rows += f"""
+        <tr>
+            <td><strong>Cluster {row["cluster"]}</strong></td>
+            <td>{farmer_info["meaning"]}</td>
+            <td>
+                <span class="priority-badge {farmer_info["priority_class"]}">
+                    {farmer_info["priority"].capitalize()}
+                </span>
+            </td>
+            <td>{farmer_info["trend_text"]}; {farmer_info["seasonality"]}.</td>
+            <td>{farmer_info["recommended_action"]}.</td>
         </tr>
         """
 
@@ -724,6 +916,13 @@ def ml_features_page():
             </p>
 
             <form method="get" class="method-box">
+                <label><strong>Dataset:</strong></label><br>
+                <select name="dataset" onchange="this.form.submit()" class="select-input">
+                    {build_dataset_options_html(selected_dataset)}
+                </select>
+
+                <br><br>
+
                 <label><strong>Indice spectral:</strong></label><br>
                 <select name="index" onchange="this.form.submit()" class="select-input">
                     {index_options}
@@ -748,9 +947,9 @@ def ml_features_page():
                 <strong>Configurație curentă:</strong><br>
                 Indice: <strong>{selected_index}</strong><br>
                 ROI: <strong>{roi.upper()}</strong><br>
-                Eșantion model: <strong>{metadata["pixel_count"]}</strong> pixeli<br>
-                Pixeli validați mapați: <strong>{metadata["mapped_pixels"]}</strong><br>
-                Ferestre temporale: <strong>{metadata["windows_extracted"]}</strong>
+                Pixeli folosiți la antrenarea modelului: <strong>{metadata["pixel_count"]}</strong><br>
+                Pixeli valizi afișați pe hartă: <strong>{metadata["mapped_pixels"]}</strong><br>
+                Ferestre temporale analizate: <strong>{metadata["windows_extracted"]}</strong>
             </div>
         </section>
 
@@ -816,6 +1015,57 @@ def ml_features_page():
             </div>
         </section>
 
+        <section class="card reveal active farmer-guide-card">
+            <div class="section-heading">
+                <span class="section-kicker">Interpretare practică</span>
+                <h2>Cum se citește harta?</h2>
+                <p class="muted">
+                    Rezultatele nu reprezintă un diagnostic agronomic final, ci un mod de a prioritiza
+                    zonele care merită verificate în teren. Pentru un utilizator practic, harta indică
+                    unde apar diferențe temporale, nu cauza exactă a acestor diferențe.
+                </p>
+            </div>
+
+            <div class="farmer-guide-grid">
+                <div class="farmer-guide-item">
+                    <span class="guide-number">1</span>
+                    <h3>Harta de clustere</h3>
+                    <p>
+                        Fiecare culoare reprezintă un grup de pixeli care au avut o evoluție temporală
+                        asemănătoare a indicelui <strong>{selected_index}</strong>. Clusterele nu sunt
+                        culturi sau clase de teren etichetate manual, ci tipare statistice identificate automat.
+                    </p>
+                </div>
+
+                <div class="farmer-guide-item">
+                    <span class="guide-number">2</span>
+                    <h3>Harta de risc</h3>
+                    <p>
+                        Zonele cu scor mai ridicat indică pixeli cu comportament temporal mai atipic.
+                        Aceste zone ar trebui verificate primele, deoarece pot semnala stres vegetal,
+                        deficit de umiditate, sol expus sau schimbări față de comportamentul dominant.
+                    </p>
+                </div>
+
+                <div class="farmer-guide-item">
+                    <span class="guide-number">3</span>
+                    <h3>Hover pe hartă</h3>
+                    <p>
+                        Valorile afișate la trecerea cu mouse-ul peste hartă descriu poziția pixelului
+                        în grila imaginii, clusterul asociat și/sau scorul de anomalie. În forma actuală,
+                        poziția este exprimată în coordonate de imagine, nu ca GPS.
+                    </p>
+                </div>
+            </div>
+
+            <div class="method-box decision-note">
+                <strong>Important:</strong><br>
+                Platforma oferă suport decizional și identifică zone de verificat. Nu recomandă automat
+                tratamente, irigare sau fertilizare, deoarece aceste decizii necesită confirmare în teren
+                și informații suplimentare despre cultură, sol și lucrări agricole.
+            </div>
+        </section>
+
         <section class="card reveal active">
             <h2>Rezumat tehnic ML</h2>
 
@@ -872,17 +1122,44 @@ def ml_features_page():
             </div>
         </section>
 
+        <section class="card reveal active farmer-table-card">
+            <div class="section-heading">
+                <h2>Interpretare practică pe clustere</h2>
+                <p class="muted">
+                    Tabelul traduce rezultatele tehnice în observații practice. Recomandările indică zone
+                    de verificat, nu acțiuni agricole automate.
+                </p>
+            </div>
+
+            <div class="table-wrap">
+                <table class="stats-table farmer-table">
+                    <thead>
+                        <tr>
+                            <th>Cluster</th>
+                            <th>Ce poate indica</th>
+                            <th>Prioritate</th>
+                            <th>Comportament temporal</th>
+                            <th>Acțiune recomandată</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {farmer_rows}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
         {figure_card(
             fig_cluster_map,
             "Hartă clustere pixeli",
-            "Fiecare pixel valid este mapat pe baza comportamentului temporal dominant.",
+            "Fiecare culoare reprezintă un grup de pixeli cu evoluție temporală asemănătoare. Harta ajută la delimitarea zonelor cu comportament diferit în interiorul regiunii analizate.",
             section_id="cluster_map",
         )}
 
         {figure_card(
             fig_risk_map,
             "Hartă risc/anomalie temporală",
-            "Zonele luminoase indică pixeli cu comportament temporal mai atipic conform Isolation Forest.",
+            "Zonele cu scor mai ridicat indică pixeli care se abat de la comportamentul temporal dominant și ar trebui prioritizați pentru verificare în teren.",
             section_id="risk_map",
         )}
 
@@ -895,8 +1172,8 @@ def ml_features_page():
 
         {figure_card(
             fig_pca,
-            "PCA 3D",
-            "Fiecare punct reprezintă o fereastră temporală extrasă dintr-un pixel.",
+            "PCA 3D – rezultat K-Means",
+            "PCA proiectează semnăturile temporale într-un spațiu redus. Culorile reprezintă clusterele atribuite prin K-Means.",
             section_id="pca_3d",
         )}
 
@@ -919,16 +1196,62 @@ def ml_features_page():
 
 
 
+
+@main_bp.route("/api/series")
+def api_series():
+    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
+    selected_index = request.args.get("index", "NDVI").upper()
+    selected_roi = request.args.get("roi") or request.args.get("site") or "roi1"
+    selected_roi = selected_roi.lower()
+
+    try:
+        df = load_index_dataframe(selected_index, dataset_id=selected_dataset)
+        df = df[df["roi"].astype(str).str.lower() == selected_roi].copy()
+        if df.empty:
+            return jsonify({
+                "status": "error",
+                "message": f"Nu există date pentru {selected_index} - {selected_roi}.",
+                "dataset": selected_dataset,
+            }), 404
+
+        df = df.sort_values("date")
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "roi": str(row["roi"]),
+                "index": str(row["index"]).upper(),
+                "value": float(row["value"]),
+            })
+
+        return jsonify({
+            "status": "ok",
+            "dataset": selected_dataset,
+            "roi": selected_roi,
+            "index": selected_index,
+            "count": len(rows),
+            "data": rows,
+        })
+    except Exception as exc:
+        return jsonify({
+            "status": "error",
+            "message": str(exc),
+            "dataset": selected_dataset,
+        }), 500
+
 @main_bp.route("/spectral-indices")
 def spectral_indices_page():
-    available_indices = list_indices()
+    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
+    dataset_name = get_dataset_display_name(selected_dataset)
+    dataset_options = build_dataset_options_html(selected_dataset)
+    available_indices = list_indices(dataset_id=selected_dataset)
 
-    selected_index = request.args.get("index", "NDVI")
+    selected_index = request.args.get("index", "NDVI").upper()
     if selected_index not in available_indices:
         selected_index = available_indices[0] if available_indices else "NDVI"
 
     try:
-        df = load_index_dataframe(selected_index)
+        df = load_index_dataframe(selected_index, dataset_id=selected_dataset)
     except Exception as exc:
         return render_template(
             "base.html",
@@ -948,51 +1271,27 @@ def spectral_indices_page():
         options_html += f"<option value='{index_name}' {selected}>{index_name}</option>"
 
     description = INDEX_DESCRIPTIONS.get(
-    selected_index,
-    "Indice spectral utilizat în analiza vegetației."
-)
+        selected_index,
+        "Indice spectral utilizat în analiza vegetației."
+    )
 
     fig = go.Figure()
 
-    for roi in df["roi"].unique():
-
-        sub = df[df["roi"] == roi].sort_values("date")
-
-        series = pd.Series(
-            sub["value"].values,
-            index=sub["date"]
-        )
-
+    for roi_name in df["roi"].unique():
+        sub = df[df["roi"] == roi_name].sort_values("date")
+        series = pd.Series(sub["value"].values, index=sub["date"])
         smooth = smooth_series(series)
 
-        fig.add_trace(
-            go.Scatter(
-                x=series.index,
-                y=series.values,
-                mode="lines",
-                name=f"{roi} raw",
-            )
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=smooth.index,
-                y=smooth.values,
-                mode="lines",
-                name=f"{roi} trend",
-                line=dict(width=4),
-            )
-        )
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name=f"{roi_name} raw"))
+        fig.add_trace(go.Scatter(x=smooth.index, y=smooth.values, mode="lines", name=f"{roi_name} trend", line=dict(width=4)))
 
     fig.update_layout(
-        title=f"Serie temporală {selected_index} – ROI1 vs ROI2",
+        title=f"Serie temporală {selected_index} – {dataset_name}",
         xaxis_title="Data",
         yaxis_title=selected_index,
     )
 
-    stats = df.groupby("roi")["value"].agg(
-        ["mean", "std", "min", "max"]
-    ).reset_index()
+    stats = df.groupby("roi")["value"].agg(["mean", "std", "min", "max"]).reset_index()
 
     table_rows = ""
     for _, row in stats.iterrows():
@@ -1014,12 +1313,18 @@ def spectral_indices_page():
         <section class="card reveal active">
           <h1>Analiza indicilor spectrali</h1>
           <p class="muted">
-    Această pagină extinde analiza NDVI către mai mulți indici spectrali
-    utilizați în monitorizarea vegetației și umidității, precum EVI,
-    SAVI, GNDVI, NDMI și AVI.
-        </p>
+            Această pagină permite analiza indicilor spectrali pentru ROI-urile demonstrative sau pentru
+            dataset-uri încărcate de utilizator.
+          </p>
 
           <form method="get" class="method-box">
+            <label><strong>Dataset:</strong></label><br><br>
+            <select name="dataset" onchange="this.form.submit()" class="select-input">
+              {dataset_options}
+            </select>
+
+            <br><br>
+
             <label for="index"><strong>Selectează indicele spectral:</strong></label><br><br>
             <select name="index" id="index" onchange="this.form.submit()" class="select-input">
               {options_html}
@@ -1027,15 +1332,17 @@ def spectral_indices_page():
           </form>
 
           <div class="method-box">
+            <strong>Dataset:</strong> {dataset_name}<br><br>
             <strong>{selected_index}:</strong><br>
-            {description}
+            {description}<br><br>
+            <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
           </div>
         </section>
 
         {figure_card(
             fig,
             f"{selected_index} – serie temporală",
-            "Seria temporală este obținută prin calculul mediei tuturor pixelilor din ROI pentru fiecare moment temporal din stack-ul multispectral.",
+            "Seria temporală este obținută prin calculul mediei valorilor pentru fiecare ROI și moment temporal.",
             section_id="spectral_index_fig",
             xaxis_title="Data",
             yaxis_title=selected_index,
@@ -1075,38 +1382,40 @@ def cross_index_analysis_page():
             content="""
             <section class="card reveal active">
               <h1>Cross-Index Analysis</h1>
-              <p class="muted">
-                Pentru această pagină este necesar pachetul plotly.
-              </p>
+              <p class="muted">Pentru această pagină este necesar pachetul plotly.</p>
             </section>
             """,
         )
 
-    selected_roi = request.args.get("roi", "roi1")
-    if selected_roi not in ["roi1", "roi2"]:
-        selected_roi = "roi1"
+    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
+    dataset_name = get_dataset_display_name(selected_dataset)
+    dataset_options = build_dataset_options_html(selected_dataset)
+    available_rois = get_dataset_rois(selected_dataset)
 
-    wide_df = build_indices_wide_dataframe(roi=selected_roi)
+    selected_roi = request.args.get("roi", available_rois[0] if available_rois else "roi1").lower()
+    if selected_roi not in available_rois:
+        selected_roi = available_rois[0] if available_rois else "roi1"
+
+    wide_df = build_indices_wide_dataframe(roi=selected_roi, dataset_id=selected_dataset)
 
     if wide_df.empty or wide_df.shape[1] < 2:
         return render_template(
             "base.html",
             title="Analiză cross-index",
             nav_html=render_nav(request.path),
-            content="""
+            content=f"""
             <section class="card reveal active">
               <h1>Cross-Index Analysis</h1>
-              <p class="muted">
-                Nu există suficiente date pentru analiza comparativă între indici.
-              </p>
+              <p class="muted">Nu există suficiente date pentru analiza comparativă între indici.</p>
+              <a class="btn-link secondary" href="/datasets">Încarcă dataset</a>
             </section>
             """,
         )
 
     roi_options = ""
-    for roi in ["roi1", "roi2"]:
-        selected = "selected" if roi == selected_roi else ""
-        roi_options += f"<option value='{roi}' {selected}>{roi.upper()}</option>"
+    for roi_name in available_rois:
+        selected = "selected" if roi_name == selected_roi else ""
+        roi_options += f"<option value='{roi_name}' {selected}>{roi_name.upper()}</option>"
 
     corr = wide_df.corr()
 
@@ -1143,7 +1452,6 @@ def cross_index_analysis_page():
     table_rows = ""
     for _, row in pairs_df.iterrows():
         strength = "Ridicată" if row["abs_corr"] >= 0.8 else "Medie" if row["abs_corr"] >= 0.5 else "Scăzută"
-
         table_rows += f"""
         <tr>
           <td>{row['index_a']}</td>
@@ -1162,27 +1470,30 @@ def cross_index_analysis_page():
         nav_html=render_nav(request.path),
         content=f"""
         <section class="card reveal active">
-  <h1>Analiză comparativă între indici spectrali</h1>
+          <h1>Analiză comparativă între indici spectrali</h1>
 
-  <p class="muted">
-    Această pagină compară indicii spectrali calculați pentru același ROI.
-    Accentul este pus pe corelații și pe identificarea perechilor de indici
-    care au evoluții temporale similare sau complementare.
-  </p>
-
-  <div class="method-box">
-    <strong>Scopul analizei:</strong><br>
-    Analiza cross-index permite observarea relațiilor dintre indicii
-    spectrali și identificarea indicilor care descriu comportamente
-    similare sau complementare ale vegetației.
-  </div>
+          <p class="muted">
+            Această pagină compară indicii spectrali calculați pentru același ROI.
+          </p>
 
           <form method="get" class="method-box">
+            <label><strong>Dataset:</strong></label><br><br>
+            <select name="dataset" onchange="this.form.submit()" class="select-input">
+              {dataset_options}
+            </select>
+
+            <br><br>
+
             <label for="roi"><strong>Selectează ROI:</strong></label><br><br>
             <select name="roi" id="roi" onchange="this.form.submit()" class="select-input">
               {roi_options}
             </select>
           </form>
+
+          <div class="method-box">
+            <strong>Dataset:</strong> {dataset_name}<br>
+            <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
+          </div>
         </section>
 
         {figure_card(
@@ -1193,8 +1504,6 @@ def cross_index_analysis_page():
             xaxis_title="Indice spectral",
             yaxis_title="Indice spectral",
         )}
-
-
 
         <section class="card reveal active">
           <h2>Tabel similaritate între indici</h2>
@@ -1208,34 +1517,22 @@ def cross_index_analysis_page():
                   <th>Similaritate</th>
                 </tr>
               </thead>
-              <tbody>
-                {table_rows}
-              </tbody>
+              <tbody>{table_rows}</tbody>
             </table>
           </div>
         </section>
 
         <section class="card reveal active">
           <h2>Interpretare automată</h2>
-
           <div class="method-box">
             <strong>Cea mai mare similaritate:</strong><br>
             Perechea <strong>{strongest['index_a']} – {strongest['index_b']}</strong>
-            are corelația <strong>{round(float(strongest['corr']), 4)}</strong>,
-            ceea ce indică un comportament temporal foarte apropiat.
+            are corelația <strong>{round(float(strongest['corr']), 4)}</strong>.
           </div>
-
           <div class="method-box">
             <strong>Cea mai mică similaritate:</strong><br>
             Perechea <strong>{weakest['index_a']} – {weakest['index_b']}</strong>
-            are corelația <strong>{round(float(weakest['corr']), 4)}</strong>,
-            sugerând că acești indici surprind aspecte diferite ale vegetației.
-          </div>
-
-          <div class="method-box">
-            <strong>Rol metodologic:</strong><br>
-            Analiza cross-index ajută la identificarea indicilor redundanți și a indicilor
-            complementari. 
+            are corelația <strong>{round(float(weakest['corr']), 4)}</strong>.
           </div>
         </section>
         """,
@@ -1244,17 +1541,17 @@ def cross_index_analysis_page():
 
 
 
+
 @main_bp.route("/methodology")
 def methodology_page():
-    df = load_ndvi()
+    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
+    dataset_name = get_dataset_display_name(selected_dataset)
+    dataset_options = build_dataset_options_html(selected_dataset)
 
-    available_indices = sorted(
-        df["index"].dropna().str.upper().unique().tolist()
-    )
+    df = load_indices_dataframe(dataset_id=selected_dataset)
 
-    available_rois = sorted(
-        df["roi"].dropna().str.lower().unique().tolist()
-    )
+    available_indices = sorted(df["index"].dropna().str.upper().unique().tolist())
+    available_rois = sorted(df["roi"].dropna().str.lower().unique().tolist())
 
     if df.empty:
         global_date_min = "n/a"
@@ -1270,10 +1567,7 @@ def methodology_page():
     if not df.empty:
         grouped = (
             df
-            .assign(
-                index_name=df["index"].str.upper(),
-                roi_name=df["roi"].str.upper()
-            )
+            .assign(index_name=df["index"].str.upper(), roi_name=df["roi"].str.upper())
             .groupby(["index_name", "roi_name"])
             .agg(
                 observations=("value", "count"),
@@ -1302,9 +1596,7 @@ def methodology_page():
 
     if not summary_rows:
         summary_rows = """
-        <tr>
-            <td colspan="7">Nu există date disponibile pentru sumar.</td>
-        </tr>
+        <tr><td colspan="7">Nu există date disponibile pentru sumar.</td></tr>
         """
 
     indices_list = ", ".join(available_indices) if available_indices else "n/a"
@@ -1323,28 +1615,26 @@ def methodology_page():
                 interpretabile: serii temporale, componente statistice, hărți de risc și prognoze.
             </p>
 
+            <form method="get" class="method-box">
+                <label><strong>Dataset:</strong></label><br><br>
+                <select name="dataset" onchange="this.form.submit()" class="select-input">
+                    {dataset_options}
+                </select>
+            </form>
+
             <div class="method-box">
-                <strong>Obiectiv:</strong><br>
-                Metodologia urmărește analiza evoluției vegetației în timp, prin combinarea indicilor
-                spectrali cu tehnici de analiză temporală, machine learning nesupervizat și forecast.
+                <strong>Dataset curent:</strong> {dataset_name}<br>
+                <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
             </div>
         </section>
 
         <section class="card reveal active">
             <h2>Date analizate</h2>
-
             <div class="method-box">
-                <strong>Indici spectrali disponibili:</strong><br>
-                {indices_list}
-                <br><br>
-                <strong>Regiuni de interes disponibile:</strong><br>
-                {rois_list}
-                <br><br>
-                <strong>Interval temporal global:</strong><br>
-                {global_date_min} – {global_date_max}
-                <br><br>
-                <strong>Total observații agregate:</strong><br>
-                {total_observations}
+                <strong>Indici spectrali disponibili:</strong><br>{indices_list}<br><br>
+                <strong>Regiuni de interes disponibile:</strong><br>{rois_list}<br><br>
+                <strong>Interval temporal global:</strong><br>{global_date_min} – {global_date_max}<br><br>
+                <strong>Total observații agregate:</strong><br>{total_observations}
             </div>
 
             <div class="table-wrap">
@@ -1360,103 +1650,37 @@ def methodology_page():
                             <th>Maxim</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {summary_rows}
-                    </tbody>
+                    <tbody>{summary_rows}</tbody>
                 </table>
             </div>
         </section>
 
         <section class="card reveal active">
             <h2>Pipeline metodologic</h2>
-
             <div class="pipeline">
-                <div class="pipeline-step">
-                    <span>1</span>
-                    <p>Încărcarea datelor satelitare</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>2</span>
-                    <p>Calculul indicilor spectrali</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>3</span>
-                    <p>Agregarea temporală pe ROI</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>4</span>
-                    <p>Analiza temporală și detectarea anomaliilor</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>5</span>
-                    <p>ML pe pixeli și forecast</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="card reveal active">
-            <h2>Etapele metodei</h2>
-
-            <div class="method-box">
-                <strong>1. Date satelitare și indici spectrali</strong><br>
-                Datele sunt organizate pe regiuni de interes și pe indici spectrali. Fiecare indice
-                oferă o perspectivă diferită asupra vegetației sau a suprafeței analizate.
-            </div>
-
-            <div class="method-box">
-                <strong>2. Analiza temporală</strong><br>
-                Seriile sunt analizate pentru evidențierea trendului, sezonalității, staționarității
-                și valorilor anomale. Descompunerea STL separă seria în trend, componentă sezonieră
-                și reziduu.
-            </div>
-
-            <div class="method-box">
-                <strong>3. Machine Learning pe pixeli</strong><br>
-                Fiecare pixel este tratat ca o semnătură temporală. Din această semnătură sunt extrase
-                caracteristici, apoi pixelii sunt grupați prin K-Means. Isolation Forest este folosit
-                pentru identificarea comportamentelor temporale atipice.
-            </div>
-
-            <div class="method-box">
-                <strong>4. Reducere dimensională și similaritate</strong><br>
-                PCA, t-SNE și UMAP sunt utilizate pentru vizualizarea semnăturilor temporale într-un
-                spațiu redus. DTW compară similaritatea dintre profilele temporale ale clusterelor.
-            </div>
-
-            <div class="method-box">
-                <strong>5. Forecast</strong><br>
-                Modelele ARIMA/SARIMA și LSTM estimează evoluția viitoare a seriei. SARIMA este potrivit
-                pentru sezonalitate explicită, iar LSTM este folosit ca metodă comparativă de tip deep learning.
+                <div class="pipeline-step"><span>1</span><p>Încărcarea datelor</p></div>
+                <div class="pipeline-step"><span>2</span><p>Validare CSV / ROI</p></div>
+                <div class="pipeline-step"><span>3</span><p>Analiză spectrală</p></div>
+                <div class="pipeline-step"><span>4</span><p>Analiză temporală</p></div>
+                <div class="pipeline-step"><span>5</span><p>ML pe pixeli și forecast</p></div>
             </div>
         </section>
 
         <section class="card reveal active">
             <h2>Interpretare metodologică</h2>
-
+            <div class="method-box">
+                <strong>Dataset-uri utilizator:</strong><br>
+                În faza 1, dataset-urile încărcate de utilizator sunt CSV-uri agregate la nivel de ROI.
+                Acestea pot fi folosite pentru analiza indicilor, Cross-Index și forecast. Pentru hărți ML
+                la nivel de pixel este necesar un dataset pixel-level sau o procesare precompute separată.
+            </div>
             <div class="method-box">
                 <strong>ML nesupervizat:</strong><br>
                 Clusterele și scorurile de anomalie nu reprezintă etichete reale ale terenului. Ele indică
                 diferențe statistice în evoluția temporală a pixelilor și trebuie interpretate ca suport
                 pentru analiză, nu ca diagnostic absolut.
             </div>
-
-            <div class="method-box">
-                <strong>Forecast:</strong><br>
-                Prognozele sunt mai relevante pe termen scurt și mediu. Pe orizonturi lungi, diferențele
-                dintre SARIMA și LSTM trebuie interpretate exploratoriu.
-            </div>
-
-            <div class="method-box">
-                <strong>Valoarea proiectului:</strong><br>
-                Aplicația unește teledetecția, analiza seriilor temporale, machine learning-ul nesupervizat
-                și predicția într-un flux coerent pentru monitorizarea vegetației.
-            </div>
         </section>
         """,
     )
-
 

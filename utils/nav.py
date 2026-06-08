@@ -4,13 +4,26 @@ from config import NAV_ITEMS
 def is_active_path(href: str, current_path: str) -> bool:
     if href == "/":
         return current_path == "/"
-    return current_path == href
+    return current_path == href or current_path.startswith(href + "/")
+
+
+def _items_with_datasets():
+    items = list(NAV_ITEMS)
+    has_datasets = any(
+        item.get("href") == "/datasets" or any(child.get("href") == "/datasets" for child in item.get("children", []))
+        for item in items
+    )
+
+    if not has_datasets:
+        items.append({"label": "Dataset-uri", "href": "/datasets"})
+
+    return items
 
 
 def render_nav(current_path: str) -> str:
     parts = []
 
-    for item in NAV_ITEMS:
+    for item in _items_with_datasets():
         if "children" not in item:
             active_class = "active" if is_active_path(item["href"], current_path) else ""
             parts.append(

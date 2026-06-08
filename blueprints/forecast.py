@@ -10,6 +10,13 @@ from services.indices_service import (
     list_indices,
     load_index_dataframe,
 )
+from services.dataset_service import (
+    DEMO_DATASET_ID,
+    build_dataset_options_html,
+    get_dataset_display_name,
+    get_dataset_rois,
+    normalize_dataset_id,
+)
 
 from utils.nav import render_nav
 from utils.page import figure_card
@@ -61,8 +68,8 @@ def clip_forecast(series: pd.Series, index_name: str) -> pd.Series:
     return series.clip(lower=lower, upper=upper)
 
 
-def get_available_indices() -> list[str]:
-    available_indices = list_indices()
+def get_available_indices(dataset_id: str = DEMO_DATASET_ID) -> list[str]:
+    available_indices = list_indices(dataset_id=dataset_id)
 
     if not available_indices:
         available_indices = DEFAULT_INDICES
@@ -79,17 +86,25 @@ def get_selected_index(available_indices: list[str]) -> str:
     return selected_index
 
 
-def get_selected_roi() -> str:
-    selected_roi = request.args.get("roi", "roi1").lower()
+def get_selected_dataset() -> str:
+    return normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
 
-    if selected_roi not in ROI_VALUES:
-        selected_roi = "roi1"
+
+def get_selected_roi(available_rois: list[str] | None = None) -> str:
+    if available_rois is None or not available_rois:
+        available_rois = ROI_VALUES
+
+    available_rois = [str(roi).lower() for roi in available_rois]
+    selected_roi = request.args.get("roi", available_rois[0]).lower()
+
+    if selected_roi not in available_rois:
+        selected_roi = available_rois[0]
 
     return selected_roi
 
 
-def prepare_roi_series(index_name: str, roi: str) -> pd.Series:
-    df = load_index_dataframe(index_name)
+def prepare_roi_series(index_name: str, roi: str, dataset_id: str = DEMO_DATASET_ID) -> pd.Series:
+    df = load_index_dataframe(index_name, dataset_id=dataset_id)
 
     required_columns = {"date", "roi", "value"}
     missing_columns = required_columns - set(df.columns)
@@ -122,13 +137,25 @@ def prepare_roi_series(index_name: str, roi: str) -> pd.Series:
 
 
 def get_target_date(series: pd.Series) -> tuple[str, pd.Timestamp, int, bool]:
+    """
+    Citește luna țintă din formular și calculează exact numărul de luni
+    dintre ultima observație istorică și luna selectată.
+
+    Important:
+    - input-ul HTML type="month" trimite valori de forma YYYY-MM;
+    - seriile sunt lunare, deci normalizăm mereu la început de lună;
+    - forecast_steps trebuie să fie egal cu months_ahead, nu minim 12,
+      altfel pare că data selectată nu schimbă rezultatul.
+    """
     raw_target_date = request.args.get("target_date")
-    last_date = series.index[-1]
+    last_date = pd.Timestamp(series.index[-1]).to_period("M").to_timestamp()
     default_target = last_date + pd.DateOffset(months=DEFAULT_FORECAST_STEPS)
 
     try:
         if raw_target_date:
-            target_dt = pd.to_datetime(raw_target_date + "-01")
+            # Acceptă atât YYYY-MM, cât și YYYY-MM-DD.
+            target_dt = pd.to_datetime(raw_target_date)
+            target_dt = target_dt.to_period("M").to_timestamp()
         else:
             target_dt = default_target
     except Exception:
@@ -147,6 +174,7 @@ def get_target_date(series: pd.Series) -> tuple[str, pd.Timestamp, int, bool]:
 
     if months_ahead > MAX_FORECAST_STEPS:
         target_dt = last_date + pd.DateOffset(months=MAX_FORECAST_STEPS)
+        target_dt = target_dt.to_period("M").to_timestamp()
         months_ahead = MAX_FORECAST_STEPS
         horizon_was_limited = True
 
@@ -154,8 +182,15 @@ def get_target_date(series: pd.Series) -> tuple[str, pd.Timestamp, int, bool]:
 
 
 def get_future_steps(months_ahead: int) -> int:
+    """
+    Returnează exact orizontul cerut de utilizator, limitat doar de pragul maxim.
+
+    În varianta anterioară se folosea max(months_ahead, DEFAULT_FORECAST_STEPS),
+    ceea ce genera mereu cel puțin 12 luni de forecast. Pentru UI era confuz,
+    deoarece schimbarea lunii țintă putea părea că nu influențează rezultatul.
+    """
     return min(
-        max(months_ahead, DEFAULT_FORECAST_STEPS),
+        max(int(months_ahead), 1),
         MAX_FORECAST_STEPS,
     )
 
@@ -242,6 +277,67 @@ def choose_sarima_config(series: pd.Series) -> dict:
     }
 
 
+def fallback_trend_forecast_on_series(
+    modeling_series: pd.Series,
+    evaluation_series: pd.Series,
+    index_name: str,
+    future_steps: int,
+    model_name_suffix: str,
+) -> dict:
+    """
+    Fallback pentru dataseturi scurte încărcate de utilizator.
+    Nu pretinde că este SARIMA: folosește o regresie liniară simplă + limitare pe domeniul indicelui.
+    Permite paginii de forecast să funcționeze și când seria are sub 24 observații lunare.
+    """
+    if len(modeling_series) < 6:
+        raise ValueError(
+            "Seria este prea scurtă pentru forecast. Sunt necesare cel puțin 6 observații lunare."
+        )
+
+    train_model, test_model = split_train_test(modeling_series)
+    _, test_real = split_train_test(evaluation_series)
+
+    x_train = np.arange(len(train_model), dtype=float)
+    y_train = train_model.values.astype(float)
+
+    if len(train_model) >= 2:
+        slope, intercept = np.polyfit(x_train, y_train, 1)
+    else:
+        slope, intercept = 0.0, float(y_train[-1])
+
+    x_test = np.arange(len(train_model), len(train_model) + len(test_model), dtype=float)
+    pred_test = pd.Series(intercept + slope * x_test, index=test_model.index)
+    pred_test = clip_forecast(pred_test, index_name)
+
+    future_index = pd.date_range(
+        start=modeling_series.index[-1] + pd.offsets.MonthBegin(1),
+        periods=future_steps,
+        freq="MS",
+    )
+    x_future = np.arange(len(modeling_series), len(modeling_series) + future_steps, dtype=float)
+    future_forecast = pd.Series(intercept + slope * x_future, index=future_index)
+    future_forecast = clip_forecast(future_forecast, index_name)
+
+    residuals = test_real - pred_test
+    future_conf = empirical_confidence_interval(future_forecast, residuals, index_name)
+    metrics = calculate_metrics(test_real, pred_test)
+
+    return {
+        "series": evaluation_series,
+        "modeling_series": modeling_series,
+        "train": train_model,
+        "test": test_real,
+        "pred_test": pred_test,
+        "future_forecast": future_forecast,
+        "future_conf": future_conf,
+        "model_name": f"Fallback trend liniar – {model_name_suffix}",
+        "model_type": "Fallback pentru serii scurte",
+        "interval_type": "interval empiric",
+        "warning": "Seria are sub 24 observații; s-a folosit un fallback simplu, nu SARIMA.",
+        **metrics,
+    }
+
+
 def empirical_confidence_interval(
     forecast: pd.Series,
     residuals: pd.Series,
@@ -274,9 +370,12 @@ def sarima_forecast_on_series(
     model_name_suffix: str,
 ) -> dict:
     if len(modeling_series) < 24:
-        raise ValueError(
-            "Seria este prea scurtă pentru ARIMA/SARIMA. "
-            "Sunt necesare cel puțin 24 de observații lunare."
+        return fallback_trend_forecast_on_series(
+            modeling_series=modeling_series,
+            evaluation_series=evaluation_series,
+            index_name=index_name,
+            future_steps=future_steps,
+            model_name_suffix=model_name_suffix,
         )
 
     cfg = choose_sarima_config(modeling_series)
@@ -1148,7 +1247,11 @@ def build_metrics_table(comparison: dict, anomaly_count: int) -> str:
 
     return f"""
 <section class="card reveal active">
-    <h2>Comparație metrici</h2>
+    <h2>Comparație metrici de validare</h2>
+    <p class="muted">
+        Aceste metrici sunt calculate pe perioada de test istorică și nu depind de luna țintă selectată.
+        Luna țintă schimbă valoarea de forecast afișată în interpretare și pe grafice.
+    </p>
     <div class="table-wrap">
         <table class="stats-table">
             <thead>
@@ -1210,12 +1313,15 @@ def build_forecast_page(
     route_path: str,
     forecast_type: str,
 ):
-    available_indices = get_available_indices()
+    selected_dataset = get_selected_dataset()
+    dataset_name = get_dataset_display_name(selected_dataset)
+    available_rois = get_dataset_rois(selected_dataset)
+    available_indices = get_available_indices(selected_dataset)
     selected_index = get_selected_index(available_indices)
-    selected_roi = get_selected_roi()
+    selected_roi = get_selected_roi(available_rois)
 
     try:
-        raw_series = prepare_roi_series(selected_index, selected_roi)
+        raw_series = prepare_roi_series(selected_index, selected_roi, selected_dataset)
         cleaned_series, anomaly_mask = preprocess_anomalies(raw_series)
         anomaly_count = int(anomaly_mask.sum())
 
@@ -1288,8 +1394,9 @@ def build_forecast_page(
             error_message=str(exc),
         )
 
+    dataset_options = build_dataset_options_html(selected_dataset)
     index_options = build_options(available_indices, selected_index)
-    roi_options = build_options(ROI_VALUES, selected_roi)
+    roi_options = build_options(available_rois, selected_roi)
 
     horizon_note = ""
 
@@ -1325,6 +1432,13 @@ def build_forecast_page(
     </p>
 
     <form method="get" class="method-box">
+        <label><strong>Dataset:</strong></label><br>
+        <select name="dataset" class="select-input" onchange="this.form.submit()">
+            {dataset_options}
+        </select>
+
+        <br><br>
+
         <label><strong>Indice spectral:</strong></label><br>
         <select name="index" class="select-input">
             {index_options}
@@ -1355,16 +1469,27 @@ def build_forecast_page(
     </form>
 
     <div class="method-box">
+        <strong>Dataset:</strong> {dataset_name}<br>
         <strong>Model:</strong> {comparison["model_name"]}<br>
         <strong>Tip model:</strong> {comparison["model_type"]}<br>
+        <strong>Observație model:</strong> {comparison.get("raw", {}).get("warning", "") or comparison.get("cleaned", {}).get("warning", "") or "-"}<br>
         <strong>Anomalii detectate și tratate:</strong> {anomaly_count}<br>
         <strong>Metodă detecție:</strong> mediană mobilă + z-score robust<br>
         <strong>Fereastră analizată:</strong> {ANOMALY_ROLLING_WINDOW} luni<br>
         <strong>Prag detecție:</strong> z-score robust &gt; {ANOMALY_Z_THRESHOLD}<br>
         <strong>Observații lunare utilizate:</strong> {len(raw_series)}<br>
         <strong>Perioadă date:</strong> {raw_series.index.min().strftime("%Y-%m")} – {raw_series.index.max().strftime("%Y-%m")}<br>
+        <strong>Luna țintă selectată:</strong> {target_date}<br>
         <strong>Orizont prognoză:</strong> {future_steps} luni<br>
         <strong>Evaluare:</strong> {interval_note}
+    </div>
+
+    <div class="method-box">
+        <strong>Rezultat pentru luna țintă:</strong><br>
+        Serie brută: <strong>{selected_index} = {value_raw:.6f}</strong><br>
+        Serie preprocesată: <strong>{selected_index} = {value_cleaned:.6f}</strong><br>
+        <br>
+        <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
     </div>
 
     {horizon_note}
@@ -1406,12 +1531,6 @@ def build_forecast_page(
 
 {metrics_table}
 
-<section class="card reveal active">
-    <h2>Notă metodologică</h2>
-    <div class="method-box">
-        Seria preprocesată nu înlocuiește seria reală, ci permite evaluarea influenței valorilor extreme asupra modelului predictiv.
-    </div>
-</section>
         """,
     )
 

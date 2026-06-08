@@ -48,19 +48,15 @@ def generate_insights(series):
 
     insights = []
 
-    # staționaritate
     if station["stationary"]:
         insights.append("Seria este staționară")
     else:
         insights.append("Seria este nestaționară")
 
-    # trend
     insights.append(detect_trend(series))
 
-    # sezonalitate
     insights.append(detect_seasonality(series))
 
-    # variabilitate
     insights.append(detect_variability(series))
 
     return insights
