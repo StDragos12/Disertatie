@@ -1,5 +1,10 @@
-from flask import Blueprint, render_template, request, send_file, redirect, url_for
+from __future__ import annotations
+
+import html
 import io
+
+from flask import Blueprint, render_template, request, send_file, redirect, url_for
+
 from services.cloud_run_service import trigger_user_dataset_precompute
 from services.dataset_service import (
     DEMO_DATASET_ID,
@@ -8,6 +13,7 @@ from services.dataset_service import (
     get_dataset_csv_bytes,
     delete_dataset,
     inspect_npy_file,
+    has_pixel_level_data,
     update_dataset_status,
 )
 from utils.nav import render_nav
@@ -16,59 +22,187 @@ from utils.nav import render_nav
 datasets_bp = Blueprint("datasets", __name__)
 
 
-def _datasets_table() -> str:
+def _esc(value) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def _status_badge(status: str) -> str:
+    normalized = str(status or "unknown").strip().lower()
+
+    meta = {
+        "completed": {
+            "class": "status-completed",
+            "icon": "●",
+            "label": "Finalizat",
+            "hint": "Rezultatele sunt disponibile.",
+        },
+        "processing": {
+            "class": "status-processing",
+            "icon": "●",
+            "label": "În procesare",
+            "hint": "Cloud Run procesează datasetul.",
+        },
+        "uploaded": {
+            "class": "status-uploaded",
+            "icon": "●",
+            "label": "Încărcat",
+            "hint": "Datasetul este încărcat, dar procesarea ML nu este finalizată.",
+        },
+        "failed": {
+            "class": "status-failed",
+            "icon": "●",
+            "label": "Eșuat",
+            "hint": "Procesarea a eșuat. Verifică logurile Cloud Run.",
+        },
+        "demo": {
+            "class": "status-completed",
+            "icon": "●",
+            "label": "Demo",
+            "hint": "Dataset demonstrativ.",
+        },
+    }
+
+    item = meta.get(
+        normalized,
+        {
+            "class": "status-unknown",
+            "icon": "●",
+            "label": normalized or "Necunoscut",
+            "hint": "Status necunoscut.",
+        },
+    )
+
+    return f"""
+    <span class="dataset-status-pill {item["class"]}" title="{_esc(item["hint"])}" data-status="{_esc(normalized)}">
+        <span class="dataset-status-dot">{item["icon"]}</span>
+        <span>{_esc(item["label"])}</span>
+    </span>
+    """
+
+
+def _first_or_default(values: list[str] | None, default: str) -> str:
+    if values:
+        return str(values[0])
+    return default
+
+
+def _dataset_action_links(dataset: dict) -> str:
+    dataset_id = dataset.get("dataset_id", "")
+    rois = dataset.get("rois") or []
+    indices = dataset.get("indices") or []
+
+    default_roi = "roi1" if dataset_id == DEMO_DATASET_ID else _first_or_default(rois, "parcela1")
+    default_index = _first_or_default(indices, "NDVI")
+
+    analysis_url = f"/spectral-indices?dataset={_esc(dataset_id)}"
+    ml_url = (
+        f"/ml-features?dataset={_esc(dataset_id)}"
+        f"&index={_esc(default_index)}"
+        f"&roi={_esc(default_roi)}"
+        f"&pixels=500"
+    )
+    csv_url = f"/datasets/{_esc(dataset_id)}/download"
+
+    delete_html = ""
+    if dataset_id != DEMO_DATASET_ID:
+        display_name = dataset.get("display_name", dataset_id)
+        delete_html = f"""
+        <form method="post" action="/datasets/{_esc(dataset_id)}/delete" class="inline-form"
+              onsubmit="return confirm('Ștergi datasetul {_esc(display_name)}?');">
+            <button class="btn-link danger-link" type="submit">Șterge</button>
+        </form>
+        """
+
+    return f"""
+    <div class="dataset-actions">
+        <a class="btn-link secondary" href="{analysis_url}">Analiză</a>
+        <a class="btn-link secondary" href="{ml_url}">ML</a>
+        <a class="btn-link secondary" href="{csv_url}">CSV</a>
+        {delete_html}
+    </div>
+    """
+
+
+def _datasets_table() -> tuple[str, bool]:
     rows = ""
+    has_processing = False
 
     for dataset in list_datasets(include_demo=True):
         dataset_id = dataset.get("dataset_id", "")
         display_name = dataset.get("display_name", dataset_id)
         source = dataset.get("source", "-")
-        status = dataset.get("status", "-")
+        status = dataset.get("status", "completed" if dataset_id == DEMO_DATASET_ID else "-")
+        status_message = dataset.get("status_message", dataset.get("message", ""))
+
+        if str(status).lower() == "processing":
+            has_processing = True
+
         input_type = dataset.get("input_type", dataset.get("original_input_type", "-"))
         original_input_type = dataset.get("original_input_type", "-")
         index_detection = dataset.get("index_detection", "-")
         rows_count = dataset.get("rows", "-")
-        rois = ", ".join(dataset.get("rois", [])) if dataset.get("rois") else "roi1, roi2" if dataset_id == DEMO_DATASET_ID else "-"
+
+        if dataset.get("rois"):
+            rois = ", ".join(dataset.get("rois", []))
+        elif dataset_id == DEMO_DATASET_ID:
+            rois = "roi1, roi2"
+        else:
+            rois = "-"
+
         indices = ", ".join(dataset.get("indices", [])) if dataset.get("indices") else "-"
 
-        delete_html = ""
-        if dataset_id != DEMO_DATASET_ID:
-            delete_html = f"""
-            <form method="post" action="/datasets/{dataset_id}/delete" style="display:inline;"
-                  onsubmit="return confirm('Ștergi datasetul {display_name}?');">
-                <button class="btn-link danger-link" type="submit">Șterge</button>
-            </form>
-            """
+        status_hint = ""
+        if status_message:
+            status_hint = f"<br><span class='muted small-muted'>{_esc(status_message)}</span>"
 
         rows += f"""
         <tr>
-            <td><strong>{display_name}</strong><br><span class="muted">{dataset_id}</span></td>
-            <td>{source}<br><span class="muted">input: {original_input_type}</span><br><span class="muted">indice: {index_detection}</span></td>
-            <td>{status}</td>
-            <td>{input_type}</td>
-            <td>{rows_count}</td>
-            <td>{rois}</td>
-            <td>{indices}</td>
             <td>
-                <a class="btn-link secondary" href="/spectral-indices?dataset={dataset_id}">Analiză</a>
-                <a class="btn-link secondary" href="/ml-features?dataset={dataset_id}">ML</a>
-                <a class="btn-link secondary" href="/datasets/{dataset_id}/download">CSV</a>
-                {delete_html}
+                <strong>{_esc(display_name)}</strong><br>
+                <span class="muted small-muted">{_esc(dataset_id)}</span>
+            </td>
+            <td>
+                {_esc(source)}<br>
+                <span class="muted small-muted">input: {_esc(original_input_type)}</span><br>
+                <span class="muted small-muted">indice: {_esc(index_detection)}</span>
+            </td>
+            <td>
+                {_status_badge(status)}
+                {status_hint}
+            </td>
+            <td>{_esc(input_type)}</td>
+            <td>{_esc(rows_count)}</td>
+            <td>{_esc(rois)}</td>
+            <td>{_esc(indices)}</td>
+            <td>
+                {_dataset_action_links(dataset)}
             </td>
         </tr>
         """
 
-    return rows
+    return rows, has_processing
 
 
 def _render_info_rows(info: dict) -> str:
     rows = ""
     for key in [
-        "filename", "shape", "ndim", "dtype", "inferred_index", "time_steps",
-        "height", "width", "valid_pixels", "finite_values", "nan_values", "min", "max", "mean",
+        "filename",
+        "shape",
+        "ndim",
+        "dtype",
+        "inferred_index",
+        "time_steps",
+        "height",
+        "width",
+        "valid_pixels",
+        "finite_values",
+        "nan_values",
+        "min",
+        "max",
+        "mean",
     ]:
         if key in info:
-            rows += f"<tr><td>{key}</td><td>{info[key]}</td></tr>"
+            rows += f"<tr><td>{_esc(key)}</td><td>{_esc(info[key])}</td></tr>"
     return rows
 
 
@@ -80,29 +214,34 @@ def _npy_preview_html(info: dict | None) -> str:
 
     if info.get("type") == "zip_npy_collection":
         file_rows = ""
+
         for item in info.get("files", []):
             file_rows += f"""
             <tr>
-                <td>{item.get('filename')}</td>
-                <td>{item.get('inferred_index', 'nedetectat')}</td>
-                <td>{item.get('shape')}</td>
-                <td>{item.get('valid_pixels', '-')}</td>
-                <td>{'Da' if item.get('supported_for_upload') else 'Nu'}</td>
+                <td>{_esc(item.get("filename"))}</td>
+                <td>{_esc(item.get("inferred_index", "nedetectat"))}</td>
+                <td>{_esc(item.get("shape"))}</td>
+                <td>{_esc(item.get("valid_pixels", "-"))}</td>
+                <td>{'Da' if item.get("supported_for_upload") else 'Nu'}</td>
             </tr>
             """
 
         return f"""
         <section class="card reveal active">
+            <div class="card-top-line"></div>
             <h2>Rezultat inspectare arhivă NPY</h2>
+
             <div class="method-box">
                 <strong>Compatibil cu upload:</strong> {supported}<br>
-                <strong>Fișiere NPY găsite:</strong> {info.get('files_count')}<br>
-                <strong>Fișiere compatibile:</strong> {info.get('supported_files')}<br>
-                <strong>Indici detectați:</strong> {', '.join(info.get('indices_detected', [])) or 'niciun indice detectat'}<br><br>
-                Criteriul de detectare este numele fișierelor din arhivă: <code>NDVI.npy</code>,
-                <code>NDMI.npy</code>, <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code>,
-                <code>GNDVI.npy</code>.
+                <strong>Fișiere NPY găsite:</strong> {_esc(info.get("files_count"))}<br>
+                <strong>Fișiere compatibile:</strong> {_esc(info.get("supported_files"))}<br>
+                <strong>Indici detectați:</strong> {_esc(", ".join(info.get("indices_detected", [])) or "niciun indice detectat")}<br><br>
+
+                Criteriul de detectare este numele fișierelor din arhivă:
+                <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>,
+                <code>AVI.npy</code>, <code>EVI.npy</code>, <code>GNDVI.npy</code>.
             </div>
+
             <div class="table-wrap">
                 <table class="stats-table">
                     <thead>
@@ -128,16 +267,275 @@ def _npy_preview_html(info: dict | None) -> str:
 
     return f"""
     <section class="card reveal active">
+        <div class="card-top-line"></div>
         <h2>Rezultat inspectare NPY</h2>
+
         <div class="method-box">
             <strong>Compatibil cu upload ML:</strong> {supported}<br>
-            <strong>Indice detectat din numele fișierului:</strong> {info.get('inferred_index', 'nedetectat')}<br><br>
-            {advice}
+            <strong>Indice detectat din numele fișierului:</strong> {_esc(info.get("inferred_index", "nedetectat"))}<br><br>
+            {_esc(advice)}
         </div>
+
         <div class="table-wrap">
             <table class="stats-table">
                 <tbody>{_render_info_rows(info)}</tbody>
             </table>
+        </div>
+    </section>
+    """
+
+
+def _upload_message(record: dict, cloud_run_started: bool, operation_name: str | None = None) -> str:
+    dataset_id = record["dataset_id"]
+    input_type = record.get("input_type", "-")
+
+    if cloud_run_started:
+        status_html = """
+        <span class="dataset-status-pill status-processing">
+            <span class="dataset-status-dot">●</span>
+            <span>În procesare</span>
+        </span>
+        """
+        note = """
+        Procesarea ML a fost pornită automat în Cloud Run. Pagina se va actualiza periodic,
+        iar rezultatele vor fi disponibile după generarea fișierelor <code>result.json</code>.
+        """
+    else:
+        status_html = """
+        <span class="dataset-status-pill status-completed">
+            <span class="dataset-status-dot">●</span>
+            <span>Disponibil</span>
+        </span>
+        """
+        note = """
+        Datasetul este disponibil pentru analiză temporală, Cross-Index și forecast.
+        Pentru ML pe pixeli este necesar CSV pixel-level sau NPY/ZIP 3D.
+        """
+
+    operation_html = ""
+    if operation_name:
+        operation_html = f"""
+        <br><span class="muted small-muted">Cloud Run operation: {_esc(operation_name)}</span>
+        """
+
+    return f"""
+    <div class="method-box dataset-upload-result">
+        <div class="dataset-result-header">
+            <div>
+                <strong>Dataset încărcat cu succes:</strong><br>
+                {_esc(record.get("display_name", dataset_id))} ({_esc(dataset_id)})
+            </div>
+            {status_html}
+        </div>
+
+        <p class="muted">
+            Tip: <strong>{_esc(input_type)}</strong><br>
+            {note}
+            {operation_html}
+        </p>
+
+        <div class="dataset-actions">
+            <a class="btn-link" href="/spectral-indices?dataset={_esc(dataset_id)}">Deschide analiza</a>
+            <a class="btn-link secondary" href="/ml-features?dataset={_esc(dataset_id)}">ML Features</a>
+            <a class="btn-link secondary" href="/datasets/{_esc(dataset_id)}/download">Descarcă CSV generat</a>
+        </div>
+    </div>
+    """
+
+
+def _upload_form_html() -> str:
+    return """
+    <section class="card reveal active dataset-upload-card">
+        <div class="card-top-line"></div>
+
+        <div class="section-heading">
+            <div>
+                <h1>Dataset-uri utilizator</h1>
+                <p class="muted">
+                    Platforma acceptă CSV ROI-level, CSV pixel-level, NPY 3D singular și arhive ZIP cu mai multe fișiere NPY.
+                    Pentru NPY, forma acceptată este <strong>[timp, rânduri, coloane]</strong>.
+                </p>
+            </div>
+        </div>
+
+        <form method="post" enctype="multipart/form-data" class="dataset-upload-form">
+            <input type="hidden" name="action" value="upload">
+
+            <div class="dataset-form-grid">
+
+                <div class="dataset-form-panel">
+                    <div class="panel-header">
+                        <span class="panel-kicker">Pasul 1</span>
+                        <h2>Informații generale</h2>
+                        <p class="muted">
+                            Definește numele datasetului și încarcă fișierul sursă.
+                        </p>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="display_name">Nume dataset</label>
+                        <input
+                            id="display_name"
+                            name="display_name"
+                            type="text"
+                            placeholder="Ex: Ferma Nord 2026"
+                            required
+                        >
+                        <p class="field-help">
+                            Numele va fi folosit în selectorul de dataseturi din platformă.
+                        </p>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="file">Fișier CSV, NPY sau ZIP cu NPY-uri</label>
+                        <input
+                            id="file"
+                            name="file"
+                            type="file"
+                            accept=".csv,.npy,.zip"
+                            required
+                        >
+                        <p class="field-help">
+                            Pentru ZIP, include fișiere denumite explicit, de exemplu
+                            <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="dataset-form-panel">
+                    <div class="panel-header">
+                        <span class="panel-kicker">Pasul 2</span>
+                        <h2>Setări pentru NPY / ZIP</h2>
+                        <p class="muted">
+                            Aceste câmpuri sunt folosite pentru conversia automată NPY → CSV pixel-level.
+                        </p>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="roi_name">Nume parcelă / ROI pentru NPY</label>
+                        <input
+                            id="roi_name"
+                            name="roi_name"
+                            type="text"
+                            value="parcela1"
+                            required
+                        >
+                        <p class="field-help">
+                            Pentru ZIP, același ROI se aplică tuturor fișierelor NPY din arhivă.
+                        </p>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="index_name">Indice spectral pentru NPY singular</label>
+                        <select id="index_name" name="index_name">
+                            <option value="NDVI">NDVI</option>
+                            <option value="NDMI">NDMI</option>
+                            <option value="SAVI">SAVI</option>
+                            <option value="AVI">AVI</option>
+                            <option value="EVI">EVI</option>
+                            <option value="GNDVI">GNDVI</option>
+                        </select>
+                        <p class="field-help">
+                            Pentru un singur NPY, aplicația încearcă să deducă indicele din numele fișierului.
+                            Dacă nu poate, folosește valoarea selectată aici. Pentru ZIP, indicele este dedus separat din fiecare fișier.
+                        </p>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="start_date">Prima lună din seria temporală NPY</label>
+                        <input
+                            id="start_date"
+                            name="start_date"
+                            type="month"
+                            value="2021-01"
+                        >
+                        <p class="field-help">
+                            Exemplu: pentru un fișier cu forma <code>(36, 24, 32)</code> și prima lună <code>2021-01</code>,
+                            aplicația generează automat observații lunare până în <code>2023-12</code>.
+                        </p>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="dataset-upload-footer">
+                <div class="dataset-note">
+                    <strong>Observație:</strong>
+                    CSV ROI-level este suficient pentru analiză temporală și forecast.
+                    Pentru ML pe pixeli sunt necesare date pixel-level sau NPY 3D.
+                </div>
+
+                <button type="submit" class="btn-primary">
+                    Încarcă dataset
+                </button>
+            </div>
+        </form>
+    </section>
+    """
+
+
+def _inspect_form_html() -> str:
+    return """
+    <section class="card reveal active compact-card">
+        <div class="card-top-line"></div>
+        <h2>Inspectare NPY / ZIP</h2>
+        <p class="muted">
+            Folosește această opțiune pentru a verifica forma unui fișier NPY sau conținutul unei arhive ZIP înainte de upload.
+        </p>
+
+        <form method="post" enctype="multipart/form-data" class="inspect-form">
+            <input type="hidden" name="action" value="inspect_npy">
+
+            <div class="form-field">
+                <label for="npy_preview_file">Fișier NPY sau ZIP</label>
+                <input
+                    id="npy_preview_file"
+                    name="npy_preview_file"
+                    type="file"
+                    accept=".npy,.zip"
+                    required
+                >
+            </div>
+
+            <button type="submit" class="btn-link secondary">
+                Inspectează fișierul
+            </button>
+        </form>
+    </section>
+    """
+
+
+def _dataset_formats_help_html() -> str:
+    return """
+    <section class="card reveal active compact-card">
+        <div class="card-top-line"></div>
+        <h2>Formate acceptate</h2>
+
+        <div class="dataset-format-grid">
+            <div class="format-box">
+                <h3>CSV ROI-level</h3>
+                <code>date,roi,index,value</code>
+                <p class="muted">
+                    Potrivit pentru analiză temporală, Cross-Index și forecast.
+                </p>
+            </div>
+
+            <div class="format-box">
+                <h3>CSV pixel-level</h3>
+                <code>date,roi,index,pixel_id,row,col,value</code>
+                <p class="muted">
+                    Necesar pentru ML pe pixeli, K-Means, Isolation Forest și hărți.
+                </p>
+            </div>
+
+            <div class="format-box">
+                <h3>NPY / ZIP NPY</h3>
+                <code>[timp, rânduri, coloane]</code>
+                <p class="muted">
+                    Pentru ZIP, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code>,
+                    <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code> sau <code>GNDVI.npy</code>.
+                </p>
+            </div>
         </div>
     </section>
     """
@@ -150,11 +548,13 @@ def datasets_page():
 
     if request.method == "POST":
         action = request.form.get("action", "upload")
+
         try:
             if action == "inspect_npy":
                 uploaded_file = request.files.get("npy_preview_file")
                 info = inspect_npy_file(uploaded_file)
                 preview_html = _npy_preview_html(info)
+
             else:
                 display_name = request.form.get("display_name", "Dataset utilizator")
                 uploaded_file = request.files.get("file")
@@ -169,158 +569,103 @@ def datasets_page():
                     index_name=index_name,
                     start_date=start_date,
                 )
-                dataset_id = record["dataset_id"]
 
-                trigger_message = ""
-                if record.get("input_type") == "pixel_csv":
+                dataset_id = record["dataset_id"]
+                cloud_run_started = False
+                operation_name = None
+
+                if has_pixel_level_data(dataset_id):
                     try:
                         operation_name = trigger_user_dataset_precompute(
                             dataset_id=dataset_id,
                             pixel_counts="500,1000,2000,5000",
                         )
+
                         update_dataset_status(
                             dataset_id=dataset_id,
                             status="processing",
-                            message=f"Cloud Run Job pornit automat: {operation_name}",
+                            message="Procesarea ML a fost pornită automat în Cloud Run.",
+                            extra={
+                                "cloud_run_operation": operation_name,
+                            },
                         )
-                        trigger_message = (
-                            "Preprocesarea ML a fost pornită automat în Cloud Run. "
-                            "Rezultatele vor apărea în ML Features după finalizarea jobului."
-                        )
-                    except Exception as trigger_exc:
+
+                        record["status"] = "processing"
+                        record["status_message"] = "Procesarea ML a fost pornită automat în Cloud Run."
+                        cloud_run_started = True
+
+                    except Exception as exc:
                         update_dataset_status(
                             dataset_id=dataset_id,
                             status="uploaded",
-                            message=(
-                                "Datasetul a fost încărcat, dar Cloud Run Job nu a putut fi pornit automat. "
-                                f"Detalii: {trigger_exc}"
-                            ),
+                            message=f"Datasetul a fost încărcat, dar Cloud Run nu a putut fi pornit automat: {exc}",
                         )
-                        trigger_message = (
-                            "Datasetul a fost încărcat, dar jobul Cloud Run nu a pornit automat. "
-                            "Poți rula jobul manual din Cloud Shell."
-                        )
+
+                        record["status"] = "uploaded"
+                        record["status_message"] = f"Cloud Run nu a putut fi pornit automat: {exc}"
+
                 else:
                     update_dataset_status(
                         dataset_id=dataset_id,
                         status="completed",
                         message="Dataset ROI-level disponibil pentru analiză temporală, Cross-Index și forecast.",
                     )
-                    trigger_message = (
-                        "Datasetul este ROI-level, deci nu necesită preprocesare ML pixel-level."
-                    )
+                    record["status"] = "completed"
+                    record["status_message"] = "Dataset ROI-level disponibil."
 
-                message_html = f"""
-                <div class="method-box">
-                    <strong>Dataset încărcat cu succes:</strong><br>
-                    {record["display_name"]} ({dataset_id})<br>
-                    Tip: {record.get("input_type", "-")}<br>
-                    Status: {trigger_message}<br><br>
-                    <a class="btn-link" href="/spectral-indices?dataset={dataset_id}">Deschide analiza</a>
-                    <a class="btn-link secondary" href="/ml-features?dataset={dataset_id}">ML Features</a>
-                    <a class="btn-link secondary" href="/datasets/{dataset_id}/download">Descarcă CSV generat</a>
-                </div>
-                """
+                message_html = _upload_message(
+                    record=record,
+                    cloud_run_started=cloud_run_started,
+                    operation_name=operation_name,
+                )
+
         except Exception as exc:
             message_html = f"""
-            <div class="method-box">
+            <div class="method-box error-box">
                 <strong>Eroare:</strong><br>
-                {exc}
+                {_esc(exc)}
             </div>
             """
 
-    rows = _datasets_table()
+    rows, has_processing = _datasets_table()
+
+    auto_refresh_html = ""
+    if has_processing:
+        auto_refresh_html = """
+        <script>
+            setTimeout(function () {
+                window.location.reload();
+            }, 15000);
+        </script>
+        """
 
     return render_template(
         "base.html",
         title="Dataset-uri utilizator",
         nav_html=render_nav(request.path),
         content=f"""
-        <section class="card reveal active">
-            <div class="card-top-line"></div>
-            <h1>Dataset-uri utilizator</h1>
-            <p class="muted">
-                Platforma acceptă CSV ROI-level, CSV pixel-level, NPY 3D singular și arhive ZIP cu mai multe NPY-uri.
-                Pentru NPY, fișierele trebuie să aibă forma <strong>[timp, rânduri, coloane]</strong>; aplicația le convertește automat
-                într-un CSV pixel-level compatibil cu modulele ML.
-            </p>
+        {message_html}
 
-            <form method="post" enctype="multipart/form-data" class="method-box">
-                <input type="hidden" name="action" value="upload">
+        {_upload_form_html()}
 
-                <label><strong>Nume dataset:</strong></label><br>
-                <input class="select-input" type="text" name="display_name" placeholder="Ex: Ferma Nord 2026" required>
-
-                <br><br>
-
-                <label><strong>Fișier CSV, NPY sau ZIP cu NPY-uri:</strong></label><br>
-                <input class="select-input" type="file" name="file" accept=".csv,.npy,.zip" required>
-
-                <br><br>
-
-                <label><strong>Nume parcelă / ROI pentru NPY:</strong></label><br>
-                <input class="select-input" type="text" name="roi_name" value="parcela1">
-                <p class="muted">Pentru ZIP, același ROI se aplică tuturor fișierelor NPY din arhivă.</p>
-
-                <br><br>
-
-                <label><strong>Indice spectral pentru NPY singular:</strong></label><br>
-                <input class="select-input" type="text" name="index_name" value="NDVI">
-                <p class="muted">
-                    Pentru un singur NPY, aplicația încearcă să deducă indicele din numele fișierului, de exemplu
-                    <code>NDMI.npy</code>. Dacă nu îl poate deduce, folosește valoarea introdusă aici.
-                    Pentru ZIP, indicele este dedus separat din fiecare fișier din arhivă.
-                </p>
-
-                <br><br>
-
-                <label><strong>Prima lună din seria temporală NPY:</strong></label><br>
-                <input class="select-input" type="month" name="start_date" value="2021-01">
-                <p class="muted">
-                    Exemplu: dacă un fișier are forma <code>(36, 24, 32)</code> și prima lună este <code>2021-01</code>,
-                    aplicația generează automat observații lunare până în <code>2023-12</code>.
-                </p>
-
-                <br><br>
-
-                <button class="btn btn-primary" type="submit">Încarcă dataset</button>
-            </form>
-
-            <div class="method-box">
-                <strong>CSV ROI-level:</strong><br>
-                <code>date,roi,index,value</code><br><br>
-                <strong>CSV pixel-level pentru ML:</strong><br>
-                <code>date,roi,index,pixel_id,row,col,value</code><br><br>
-                <strong>NPY singular pentru ML:</strong><br>
-                array numeric 3D <code>[timp, rânduri, coloane]</code>. Dacă fișierul se numește <code>NDMI.npy</code>,
-                aplicația îl tratează automat ca NDMI. Dacă numele nu conține un indice recunoscut, se folosește câmpul manual.
-                <br><br>
-                <strong>ZIP multi-index:</strong><br>
-                arhivă cu fișiere denumite <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>,
-                <code>AVI.npy</code>, <code>EVI.npy</code>, <code>GNDVI.npy</code>. Fiecare fișier devine un indice spectral în același dataset.
-            </div>
-
-            {message_html}
-        </section>
-
-        <section class="card reveal active">
-            <h2>Inspectare NPY înainte de upload</h2>
-            <p class="muted">
-                Folosește această verificare ca să vezi forma, dimensiunile, numărul de pixeli validați, valorile minime/maxime
-                și indicii detectați automat din numele fișierelor.
-            </p>
-            <form method="post" enctype="multipart/form-data" class="method-box">
-                <input type="hidden" name="action" value="inspect_npy">
-                <input class="select-input" type="file" name="npy_preview_file" accept=".npy,.zip" required>
-                <br><br>
-                <button class="btn btn-primary" type="submit">Inspectează NPY / ZIP</button>
-            </form>
-        </section>
+        {_inspect_form_html()}
 
         {preview_html}
 
+        {_dataset_formats_help_html()}
+
         <section class="card reveal active">
-            <h2>Dataset-uri disponibile</h2>
+            <div class="card-top-line"></div>
+            <div class="section-heading horizontal-heading">
+                <div>
+                    <h2>Dataset-uri disponibile</h2>
+                    <p class="muted">
+                        Statusul indică dacă procesarea Cloud Run este finalizată.
+                        Pagina se reîncarcă automat cât timp există dataseturi în procesare.
+                    </p>
+                </div>
+            </div>
+
             <div class="table-wrap">
                 <table class="stats-table">
                     <thead>
@@ -341,6 +686,8 @@ def datasets_page():
                 </table>
             </div>
         </section>
+
+        {auto_refresh_html}
         """,
     )
 
@@ -348,6 +695,7 @@ def datasets_page():
 @datasets_bp.route("/datasets/<dataset_id>/download")
 def download_dataset_csv(dataset_id: str):
     data, filename = get_dataset_csv_bytes(dataset_id)
+
     return send_file(
         io.BytesIO(data),
         mimetype="text/csv",

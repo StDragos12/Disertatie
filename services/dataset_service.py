@@ -1083,3 +1083,80 @@ def build_pixel_ml_payload_from_dataset(
             "representative": {"dates": dates, "values": [float(v) for v in wide.loc[rep_pixel].values]},
         },
     }
+
+def _gcs_status_blob(dataset_id: str) -> str:
+    return f"user_datasets/{normalize_dataset_id(dataset_id)}/status.json"
+
+
+def _local_status_path(dataset_id: str) -> Path:
+    return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / "status.json"
+
+
+def update_dataset_status(
+    dataset_id: str,
+    status: str,
+    message: str = "",
+    extra: dict | None = None,
+) -> dict:
+    """
+    Actualizează statusul unui dataset atât în index.json, cât și în status.json.
+
+    Statusuri recomandate:
+    - uploaded
+    - processing
+    - completed
+    - failed
+    """
+
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if dataset_id == DEMO_DATASET_ID:
+        return {
+            "dataset_id": DEMO_DATASET_ID,
+            "status": "completed",
+            "message": "Dataset demonstrativ.",
+        }
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    record = get_dataset_record(dataset_id) or {
+        "dataset_id": dataset_id,
+        "display_name": dataset_id,
+        "source": "uploaded_dataset",
+    }
+
+    record["status"] = str(status or "unknown").strip().lower()
+    record["status_message"] = str(message or "")
+    record["status_updated_at"] = now
+
+    if extra:
+        record.update(extra)
+
+    _upsert_dataset_record(record)
+
+    status_payload = {
+        "dataset_id": dataset_id,
+        "status": record["status"],
+        "message": record["status_message"],
+        "updated_at": now,
+    }
+
+    if extra:
+        status_payload.update(extra)
+
+    if using_gcs():
+        client = _storage_client()
+        bucket = client.bucket(_bucket_name())
+        bucket.blob(_gcs_status_blob(dataset_id)).upload_from_string(
+            json.dumps(status_payload, ensure_ascii=False, indent=2),
+            content_type="application/json; charset=utf-8",
+        )
+    else:
+        path = _local_status_path(dataset_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(status_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    return record
