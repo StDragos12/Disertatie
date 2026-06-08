@@ -1,9 +1,6 @@
 import os
 
-try:
-    from google.cloud import run_v2
-except Exception:
-    run_v2 = None
+from google.cloud import run_v2
 
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "plucky-environs-416709")
@@ -19,17 +16,14 @@ def trigger_user_dataset_precompute(
     pixel_counts: str = "500,1000,2000,5000",
 ) -> str:
     """
-    Pornește Cloud Run Job pentru precomputarea ML a unui dataset încărcat de utilizator.
+    Pornește Cloud Run Job pentru preprocesarea asincronă a unui dataset încărcat.
 
-    App Engine rămâne doar interfață web/upload.
-    Cloud Run Job citește CSV-ul standardizat din Cloud Storage și scrie result.json.
+    Important:
+    Cloud Run override args înlocuiește args-urile definite la deploy.
+    De aceea trebuie inclus explicit și scriptul Python:
+    precompute_user_dataset.py
     """
-    if run_v2 is None:
-        raise ImportError(
-            "google-cloud-run nu este instalat. Adaugă google-cloud-run în requirements.txt."
-        )
 
-    dataset_id = str(dataset_id).strip()
     if not dataset_id:
         raise ValueError("dataset_id este obligatoriu pentru pornirea Cloud Run Job.")
 
@@ -45,8 +39,9 @@ def trigger_user_dataset_precompute(
             container_overrides=[
                 run_v2.RunJobRequest.Overrides.ContainerOverride(
                     args=[
+                        "precompute_user_dataset.py",
                         "--dataset-id",
-                        dataset_id,
+                        str(dataset_id),
                         "--pixels",
                         str(pixel_counts),
                     ]
