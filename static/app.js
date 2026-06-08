@@ -38,3 +38,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 });
+document.addEventListener("submit", function (event) {
+    const form = event.target;
+
+    if (!form.classList.contains("dataset-upload-form")) {
+        return;
+    }
+
+    const button = form.querySelector("button[type='submit']");
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Se încarcă...";
+        button.classList.add("is-loading");
+    }
+});

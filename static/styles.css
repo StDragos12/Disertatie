@@ -1500,3 +1500,10 @@ body.app-shell {
         display: block;
     }
 }
+.btn-primary:disabled,
+.btn-primary.is-loading {
+    opacity: 0.65;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
+}

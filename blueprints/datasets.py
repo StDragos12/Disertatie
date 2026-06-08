@@ -15,6 +15,8 @@ from services.dataset_service import (
     inspect_npy_file,
     has_pixel_level_data,
     update_dataset_status,
+    normalize_dataset_id,
+    get_dataset_record,
 )
 from utils.nav import render_nav
 
@@ -185,6 +187,7 @@ def _datasets_table() -> tuple[str, bool]:
 
 def _render_info_rows(info: dict) -> str:
     rows = ""
+
     for key in [
         "filename",
         "shape",
@@ -203,6 +206,7 @@ def _render_info_rows(info: dict) -> str:
     ]:
         if key in info:
             rows += f"<tr><td>{_esc(key)}</td><td>{_esc(info[key])}</td></tr>"
+
     return rows
 
 
@@ -562,62 +566,69 @@ def datasets_page():
                 index_name = request.form.get("index_name", "NDVI")
                 start_date = request.form.get("start_date", "2021-01")
 
-                record = save_uploaded_dataset(
-                    display_name=display_name,
-                    file_storage=uploaded_file,
-                    roi_name=roi_name,
-                    index_name=index_name,
-                    start_date=start_date,
-                )
+                candidate_dataset_id = normalize_dataset_id(display_name)
+                existing_record = get_dataset_record(candidate_dataset_id)
 
-                dataset_id = record["dataset_id"]
-                cloud_run_started = False
-                operation_name = None
+                if existing_record is None:
+                    record = save_uploaded_dataset(
+                        display_name=display_name,
+                        file_storage=uploaded_file,
+                        roi_name=roi_name,
+                        index_name=index_name,
+                        start_date=start_date,
+                    )
 
-                if has_pixel_level_data(dataset_id):
-                    try:
-                        operation_name = trigger_user_dataset_precompute(
-                            dataset_id=dataset_id,
-                            pixel_counts="500,1000,2000,5000",
-                        )
+                    dataset_id = record["dataset_id"]
+                    cloud_run_started = False
+                    operation_name = None
 
+                    if has_pixel_level_data(dataset_id):
+                        try:
+                            operation_name = trigger_user_dataset_precompute(
+                                dataset_id=dataset_id,
+                                pixel_counts="500,1000,2000,5000",
+                            )
+
+                            update_dataset_status(
+                                dataset_id=dataset_id,
+                                status="processing",
+                                message="Procesarea ML a fost pornită automat în Cloud Run.",
+                                extra={
+                                    "cloud_run_operation": operation_name,
+                                },
+                            )
+
+                            record["status"] = "processing"
+                            record["status_message"] = "Procesarea ML a fost pornită automat în Cloud Run."
+                            cloud_run_started = True
+
+                        except Exception as exc:
+                            update_dataset_status(
+                                dataset_id=dataset_id,
+                                status="uploaded",
+                                message=f"Datasetul a fost încărcat, dar Cloud Run nu a putut fi pornit automat: {exc}",
+                            )
+
+                            record["status"] = "uploaded"
+                            record["status_message"] = f"Cloud Run nu a putut fi pornit automat: {exc}"
+
+                    else:
                         update_dataset_status(
                             dataset_id=dataset_id,
-                            status="processing",
-                            message="Procesarea ML a fost pornită automat în Cloud Run.",
-                            extra={
-                                "cloud_run_operation": operation_name,
-                            },
+                            status="completed",
+                            message="Dataset ROI-level disponibil pentru analiză temporală, Cross-Index și forecast.",
                         )
+                        record["status"] = "completed"
+                        record["status_message"] = "Dataset ROI-level disponibil."
 
-                        record["status"] = "processing"
-                        record["status_message"] = "Procesarea ML a fost pornită automat în Cloud Run."
-                        cloud_run_started = True
-
-                    except Exception as exc:
-                        update_dataset_status(
-                            dataset_id=dataset_id,
-                            status="uploaded",
-                            message=f"Datasetul a fost încărcat, dar Cloud Run nu a putut fi pornit automat: {exc}",
-                        )
-
-                        record["status"] = "uploaded"
-                        record["status_message"] = f"Cloud Run nu a putut fi pornit automat: {exc}"
+                    message_html = _upload_message(
+                        record=record,
+                        cloud_run_started=cloud_run_started,
+                        operation_name=operation_name,
+                    )
 
                 else:
-                    update_dataset_status(
-                        dataset_id=dataset_id,
-                        status="completed",
-                        message="Dataset ROI-level disponibil pentru analiză temporală, Cross-Index și forecast.",
-                    )
-                    record["status"] = "completed"
-                    record["status_message"] = "Dataset ROI-level disponibil."
-
-                message_html = _upload_message(
-                    record=record,
-                    cloud_run_started=cloud_run_started,
-                    operation_name=operation_name,
-                )
+                    message_html = ""
 
         except Exception as exc:
             message_html = f"""
