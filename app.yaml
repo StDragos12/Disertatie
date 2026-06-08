@@ -1,11 +1,12 @@
 runtime: python311
-entrypoint: gunicorn -b :$PORT app:app --timeout 300 --workers 1 --threads 2
+entrypoint: gunicorn -b :$PORT app:app --timeout 300 --workers 1
 
-instance_class: F2
+instance_class: F1
 
 env_variables:
   GCS_BUCKET_NAME: "ndvi-spectral-arrays-plucky-environs-416709"
   GOOGLE_CLOUD_PROJECT: "plucky-environs-416709"
+  ALLOW_LIVE_USER_ML_FALLBACK: "false"
 
 automatic_scaling:
   min_instances: 0
