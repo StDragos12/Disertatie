@@ -24,7 +24,7 @@ from services.dataset_service import (
     normalize_dataset_id,
     has_pixel_level_data,
     read_dataset_status,
-    build_pixel_ml_payload_from_dataset,
+    list_datasets,
 )
 from services.precomputed_ml_service import (
     DEFAULT_PIXEL_COUNTS,
@@ -137,154 +137,222 @@ def home():
 
 
 
+def _catalog_status_badge(status: str) -> str:
+    normalized = str(status or "unknown").strip().lower()
+    meta = {
+        "completed": ("status-completed", "Finalizat"),
+        "processing": ("status-processing", "În procesare"),
+        "uploaded": ("status-uploaded", "Încărcat"),
+        "failed": ("status-failed", "Eșuat"),
+        "demo": ("status-completed", "Demo"),
+    }
+    css_class, label = meta.get(normalized, ("status-unknown", normalized or "Necunoscut"))
+    return f"""
+    <span class="dataset-status-pill {css_class}">
+        <span class="dataset-status-dot">●</span>
+        <span>{label}</span>
+    </span>
+    """
+
+
+def _catalog_dataset_cards() -> str:
+    cards = ""
+
+    for dataset in list_datasets(include_demo=True):
+        dataset_id = dataset.get("dataset_id", DEMO_DATASET_ID)
+        display_name = dataset.get("display_name", dataset_id)
+        status = dataset.get("status", "demo" if dataset_id == DEMO_DATASET_ID else "uploaded")
+        input_type = dataset.get("input_type", dataset.get("original_input_type", "-"))
+        rows = dataset.get("rows", "-")
+        rois = dataset.get("rois") or (["roi1", "roi2"] if dataset_id == DEMO_DATASET_ID else [])
+        indices = dataset.get("indices") or []
+
+        default_roi = rois[0] if rois else ("roi1" if dataset_id == DEMO_DATASET_ID else "parcela1")
+        default_index = indices[0] if indices else "NDVI"
+
+        rois_text = ", ".join(str(x).upper() for x in rois) if rois else "-"
+        indices_text = ", ".join(str(x).upper() for x in indices) if indices else "-"
+
+        ml_link = (
+            f"/ml-features?dataset={dataset_id}&index={default_index}"
+            f"&roi={default_roi}&pixels=500"
+        )
+        spectral_link = (
+            f"/spectral-indices?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+        )
+        temporal_link = (
+            f"/stationarity?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+        )
+        forecast_link = (
+            f"/forecast-arima?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+        )
+        json_link = (
+            f"/api/series?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+        )
+
+        cards += f"""
+        <article class="catalog-dataset-card">
+            <div class="dataset-card-header">
+                <div>
+                    <span class="panel-kicker">Dataset</span>
+                    <h3>{display_name}</h3>
+                    <p class="muted small-muted">{dataset_id}</p>
+                </div>
+                {_catalog_status_badge(status)}
+            </div>
+
+            <div class="dataset-card-meta-grid">
+                <div><span>Tip</span><strong>{input_type}</strong></div>
+                <div><span>Rânduri</span><strong>{rows}</strong></div>
+                <div><span>ROI-uri</span><strong>{rois_text}</strong></div>
+                <div><span>Indici</span><strong>{indices_text}</strong></div>
+            </div>
+
+            <div class="dataset-actions catalog-actions">
+                <a class="btn-link" href="{spectral_link}">Analiză</a>
+                <a class="btn-link secondary" href="{temporal_link}">Temporal</a>
+                <a class="btn-link secondary" href="{ml_link}">ML</a>
+                <a class="btn-link secondary" href="{forecast_link}">Forecast</a>
+                <a class="btn-link secondary" href="{json_link}">JSON</a>
+            </div>
+        </article>
+        """
+
+    return cards
+
+
 @main_bp.route("/series-catalog")
 def series_catalog():
+    dataset_cards = _catalog_dataset_cards()
+
     return render_template(
         "base.html",
-        title="Catalog module",
+        title="Catalog serii și dataseturi",
         nav_html=render_nav(request.path),
-        content="""
-        <section class="card reveal active">
+        content=f"""
+        <section class="card reveal active catalog-hero-card">
             <div class="card-top-line"></div>
-            <h1>Catalogul modulelor aplicației</h1>
-            <p class="muted">
-                Această pagină oferă o vedere de ansamblu asupra modulelor principale ale platformei:
-                date satelitare, indici spectrali, serii sintetice, analiză temporală, machine learning,
-                forecast și metodologie. Fiecare card duce către pagina principală a modulului, fără a încărca
-                inutil catalogul cu toate combinațiile de indici și ROI-uri.
-            </p>
+            <div class="section-heading horizontal-heading">
+                <div>
+                    <h1>Catalog serii și dataseturi</h1>
+                </div>
+                <a class="btn-link" href="/datasets">Gestionează dataseturi</a>
+            </div>
 
             <div class="method-box">
-                <strong>Recomandare de utilizare:</strong><br>
-                Pornește de la indicii spectrali, verifică analiza temporală, apoi folosește modulul ML
-                pentru hărți de risc și modulul de forecast pentru estimarea evoluției viitoare.
+                <strong>Flux recomandat:</strong><br>
+                Încarcă sau selectează un dataset, verifică indicii și ROI-urile disponibile, apoi continuă cu
+                analiza temporală, hărțile ML și prognoza. Dataseturile încărcate de utilizator sunt integrate
+                în aceleași module ca datasetul demonstrativ.
             </div>
         </section>
 
         <section class="card reveal active">
+            <div class="card-top-line"></div>
             <h2>Fluxul principal</h2>
 
             <div class="pipeline">
-                <div class="pipeline-step">
-                    <span>1</span>
-                    <p>Date și ROI-uri</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>2</span>
-                    <p>Indici spectrali</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>3</span>
-                    <p>Analiză temporală</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>4</span>
-                    <p>ML pe pixeli</p>
-                </div>
-
-                <div class="pipeline-step">
-                    <span>5</span>
-                    <p>Forecast și interpretare</p>
-                </div>
+                <div class="pipeline-step"><span>1</span><p>Dataseturi</p></div>
+                <div class="pipeline-step"><span>2</span><p>Indici și ROI-uri</p></div>
+                <div class="pipeline-step"><span>3</span><p>Analiză temporală</p></div>
+                <div class="pipeline-step"><span>4</span><p>ML pe pixeli</p></div>
+                <div class="pipeline-step"><span>5</span><p>Forecast</p></div>
             </div>
         </section>
 
-        <div class="catalog-grid">
-
-            <div class="catalog-card">
-                <div class="badge blue">Date</div>
-                <h2>Date și ROI-uri</h2>
-                <p class="muted">
-                    Descrierea regiunilor analizate și accesul către datele agregate folosite de aplicație.
-                </p>
-                <ul>
-                    <li><a href="/roi">Deschide modulul ROI</a></li>
-                    <li><a href="/api/series?index=NDVI&roi=roi1">Exemplu date JSON</a></li>
-                </ul>
+        <section class="card reveal active">
+            <div class="card-top-line"></div>
+            <div class="section-heading horizontal-heading">
+                <div>
+                    <h2>Dataseturi disponibile</h2>
+                    <p class="muted">
+                        Cardurile de mai jos folosesc metadatele din platformă: status, ROI-uri, indici și număr de rânduri.
+                    </p>
+                </div>
+                <a class="btn-link secondary" href="/datasets">Încarcă dataset nou</a>
             </div>
-
-            <div class="catalog-card">
-                <div class="badge green">Indici</div>
-                <h2>Indici spectrali</h2>
-                <p class="muted">
-                    Vizualizarea și compararea indicilor NDVI, NDMI, SAVI, AVI, EVI și GNDVI.
-                </p>
-                <ul>
-                    <li><a href="/spectral-indices">Deschide analiza indicilor</a></li>
-                    <li><a href="/cross-index-analysis">Analiză cross-index</a></li>
-                </ul>
+            <div class="catalog-dataset-grid">
+                {dataset_cards}
             </div>
+        </section>
 
-            <div class="catalog-card">
-                <div class="badge cyan">Serii</div>
-                <h2>Serii sintetice</h2>
-                <p class="muted">
-                    Exemple controlate pentru explicarea staționarității, trendului, sezonalității și zgomotului.
-                </p>
-                <ul>
-                    <li><a href="/synthetic">Catalog serii sintetice</a></li>
-                    <li><a href="/temperature-demo">Temperatură demonstrativă</a></li>
-                </ul>
+        <section class="card reveal active">
+            <div class="card-top-line"></div>
+            <h2>Modulele aplicației</h2>
+
+            <div class="catalog-grid">
+                <div class="catalog-card">
+                    <div class="badge blue">Date</div>
+                    <h2>Date și ROI-uri</h2>
+                    <p class="muted">Încărcarea, inspectarea și administrarea dataseturilor utilizator.</p>
+                    <ul>
+                        <li><a href="/datasets">Dataseturi utilizator</a></li>
+                        <li><a href="/roi">ROI demonstrative</a></li>
+                    </ul>
+                </div>
+
+                <div class="catalog-card">
+                    <div class="badge green">Indici</div>
+                    <h2>Indici spectrali</h2>
+                    <p class="muted">Vizualizare pentru NDVI, NDMI, SAVI, AVI, EVI și GNDVI.</p>
+                    <ul>
+                        <li><a href="/spectral-indices">Analiza indicilor</a></li>
+                        <li><a href="/cross-index-analysis">Analiză Cross-Index</a></li>
+                    </ul>
+                </div>
+
+                <div class="catalog-card">
+                    <div class="badge cyan">Serii</div>
+                    <h2>Serii sintetice</h2>
+                    <p class="muted">Exemple controlate pentru staționaritate, trend, sezonalitate și zgomot.</p>
+                    <ul>
+                        <li><a href="/synthetic">Catalog serii sintetice</a></li>
+                        <li><a href="/temperature-demo">Temperatură demonstrativă</a></li>
+                    </ul>
+                </div>
+
+                <div class="catalog-card">
+                    <div class="badge teal">Temporal</div>
+                    <h2>Analiză temporală</h2>
+                    <p class="muted">Staționaritate, STL, trend, sezonalitate și detecția anomaliilor.</p>
+                    <ul>
+                        <li><a href="/stationarity">Staționaritate</a></li>
+                        <li><a href="/decompose">Descompunere STL</a></li>
+                        <li><a href="/anomalies">Anomalii</a></li>
+                    </ul>
+                </div>
+
+                <div class="catalog-card highlight-card">
+                    <div class="badge red">ML</div>
+                    <h2>Machine Learning pe pixeli</h2>
+                    <p class="muted">K-Means, Isolation Forest, PCA, t-SNE, UMAP, DTW și hărți de risc.</p>
+                    <ul><li><a href="/ml-features">Deschide modulul ML</a></li></ul>
+                </div>
+
+                <div class="catalog-card">
+                    <div class="badge purple">Forecast</div>
+                    <h2>Prognoză temporală</h2>
+                    <p class="muted">Estimarea evoluției viitoare prin ARIMA/SARIMA și LSTM.</p>
+                    <ul>
+                        <li><a href="/forecast-arima">Forecast ARIMA / SARIMA</a></li>
+                        <li><a href="/forecast-lstm">Forecast LSTM</a></li>
+                    </ul>
+                </div>
+
+                <div class="catalog-card">
+                    <div class="badge gray">Metodologie</div>
+                    <h2>Metodologie</h2>
+                    <p class="muted">Descrierea pipeline-ului, ipotezelor, metodelor și arhitecturii cloud.</p>
+                    <ul>
+                        <li><a href="/methodology">Deschide metodologia</a></li>
+                        <li><a href="/debug">Debug date</a></li>
+                    </ul>
+                </div>
             </div>
-
-            <div class="catalog-card">
-                <div class="badge teal">Temporal</div>
-                <h2>Analiză temporală</h2>
-                <p class="muted">
-                    Module pentru staționaritate, descompunere STL, trend, sezonalitate și anomalii.
-                </p>
-                <ul>
-                    <li><a href="/stationarity">Staționaritate</a></li>
-                    <li><a href="/decompose">Descompunere STL</a></li>
-                    <li><a href="/trend">Trend</a></li>
-                    <li><a href="/seasonality">Sezonalitate</a></li>
-                    <li><a href="/anomalies">Anomalii</a></li>
-                </ul>
-            </div>
-
-            <div class="catalog-card highlight-card">
-                <div class="badge red">ML</div>
-                <h2>Machine Learning pe pixeli</h2>
-                <p class="muted">
-                    Clustering, detecție de anomalii, PCA, t-SNE, UMAP, DTW, profil temporal pe cluster
-                    și hărți de risc/anomalie temporală.
-                </p>
-                <ul>
-                    <li><a href="/ml-features">Deschide modulul ML</a></li>
-                </ul>
-            </div>
-
-            <div class="catalog-card">
-                <div class="badge purple">Forecast</div>
-                <h2>Prognoză temporală</h2>
-                <p class="muted">
-                    Estimarea evoluției viitoare prin modele ARIMA/SARIMA și LSTM.
-                </p>
-                <ul>
-                    <li><a href="/forecast-arima">Forecast ARIMA / SARIMA</a></li>
-                    <li><a href="/forecast-lstm">Forecast LSTM</a></li>
-                </ul>
-            </div>
-
-            <div class="catalog-card">
-                <div class="badge gray">Metodologie</div>
-                <h2>Metodologie</h2>
-                <p class="muted">
-                    Explicarea pipeline-ului, a ipotezelor, a metodelor folosite și a rolului fiecărui modul.
-                </p>
-                <ul>
-                    <li><a href="/methodology">Deschide metodologia</a></li>
-                    <li><a href="/debug">Debug date</a></li>
-                </ul>
-            </div>
-
-        </div>
-
+        </section>
         """,
     )
+
 
 @main_bp.route("/roi")
 def roi_page():
@@ -298,7 +366,7 @@ def roi_page():
           <div class="roi-meta"><strong>ROI / coordonate:</strong><br>{info["coords"]}</div>
           <div class="roi-meta"><strong>Comportament NDVI așteptat:</strong><br>{info["expected_ndvi"]}</div>
           <div class="roi-actions">
-            <a class="btn-link" href="{info["route"]}">Vezi seria NDVI</a>
+            <a class="btn-link" href="{info["route"]}">Vezi seria</a>
             <a class="btn-link secondary" href="/api/series?site={site_code}">Date JSON</a>
           </div>
         </div>
@@ -311,10 +379,6 @@ def roi_page():
         content=f"""
         <section class="card reveal active">
           <h1>Regiuni de interes (ROI)</h1>
-          <p class="muted">
-            Această pagină descrie cele trei regiuni de interes utilizate în analiza NDVI:
-            un spațiu verde urban, un teren agricol și o zonă urbană densă.
-          </p>
           <div class="method-box">
             <strong>Rolul ROI-urilor:</strong><br>
             Fiecare ROI reprezintă un tip distinct de acoperire a terenului.
@@ -414,73 +478,33 @@ def build_farmer_cluster_interpretation(row, selected_index):
 def ml_features_page():
     selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
 
-    # Pentru dataset-uri încărcate de utilizator, ML este disponibil dacă CSV-ul este pixel-level.
-    # Format acceptat: date, roi, index, pixel_id, row, col, value.
     user_payload = None
-    user_dataset_message = ""
+
     if selected_dataset != DEMO_DATASET_ID:
+        available_indices = list_indices(dataset_id=selected_dataset)
+        if not available_indices:
+            available_indices = ["NDVI"]
+
+        selected_index = request.args.get("index", available_indices[0]).upper()
+        if selected_index not in available_indices:
+            selected_index = available_indices[0]
+
+        available_rois = [str(r).lower() for r in get_dataset_rois(selected_dataset)]
+        if not available_rois:
+            available_rois = ["parcela1"]
+
+        roi = request.args.get("roi", available_rois[0]).lower()
+        if roi not in available_rois:
+            roi = available_rois[0]
+
         try:
-            if has_pixel_level_data(selected_dataset):
-                available_indices = list_indices(dataset_id=selected_dataset)
-                selected_index = request.args.get("index", available_indices[0] if available_indices else "NDVI").upper()
-                if selected_index not in available_indices:
-                    selected_index = available_indices[0] if available_indices else "NDVI"
+            pixel_count = int(request.args.get("pixels", "500"))
+        except Exception:
+            pixel_count = 500
+        if pixel_count not in DEFAULT_PIXEL_COUNTS:
+            pixel_count = min(DEFAULT_PIXEL_COUNTS, key=lambda x: abs(x - pixel_count))
 
-                available_rois = get_dataset_rois(selected_dataset)
-                roi = request.args.get("roi", available_rois[0] if available_rois else "roi1").lower()
-                if roi not in available_rois:
-                    roi = available_rois[0] if available_rois else "roi1"
-
-                try:
-                    pixel_count = int(request.args.get("pixels", "1000"))
-                except Exception:
-                    pixel_count = 1000
-                if pixel_count not in DEFAULT_PIXEL_COUNTS:
-                    pixel_count = min(DEFAULT_PIXEL_COUNTS, key=lambda x: abs(x - pixel_count))
-
-                user_payload = build_pixel_ml_payload_from_dataset(
-                    selected_dataset, selected_index, roi, pixel_count
-                )
-            else:
-                raise ValueError(
-                    "Datasetul selectat este ROI-level. Pentru ML pe pixeli încarcă un CSV pixel-level cu "
-                    "date, roi, index, pixel_id, row, col, value."
-                )
-        except Exception as exc:
-            dataset_options = build_dataset_options_html(selected_dataset)
-            return render_template(
-                "base.html",
-                title="ML pe pixeli",
-                nav_html=render_nav(request.path),
-                content=f"""
-                <section class="card reveal active">
-                    <div class="card-top-line"></div>
-                    <h1>Analiză ML pe pixeli</h1>
-                    <p class="muted">
-                        Pentru dataset-uri încărcate de utilizator, modulul ML necesită date la nivel de pixel.
-                    </p>
-                    <form method="get" class="method-box">
-                        <label><strong>Dataset:</strong></label><br>
-                        <select name="dataset" onchange="this.form.submit()" class="select-input">
-                            {dataset_options}
-                        </select>
-                    </form>
-                    <div class="method-box">
-                        <strong>Detalii:</strong><br>
-                        {exc}
-                        <br><br>
-                        Format ML acceptat:<br>
-                        <code>date,roi,index,pixel_id,row,col,value</code>
-                        <br><br>
-                        <a class="btn-link" href="/datasets">Încarcă dataset</a>
-                        <a class="btn-link secondary" href="/spectral-indices?dataset={selected_dataset}">Analiză ROI-level</a>
-                        <a class="btn-link secondary" href="/forecast-arima?dataset={selected_dataset}">Forecast</a>
-                    </div>
-                </section>
-                """,
-            )
-
-    if user_payload is None:
+    else:
         available_indices = [
             "NDVI",
             "NDMI",
@@ -536,14 +560,12 @@ def ml_features_page():
         """
 
     try:
-        if user_payload is not None:
-            payload = user_payload
-        else:
-            payload = load_precomputed_ml_payload(
-                selected_index,
-                roi,
-                pixel_count,
-            )
+        payload = load_precomputed_ml_payload(
+            selected_index,
+            roi,
+            pixel_count,
+            dataset_id=selected_dataset,
+        )
 
     except Exception as exc:
         return render_template(

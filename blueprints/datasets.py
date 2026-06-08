@@ -416,7 +416,7 @@ def _upload_form_html() -> str:
                     </div>
 
                     <div class="form-field">
-                        <label for="roi_name">Nume parcelă / ROI pentru NPY</label>
+                        <label for="roi_name">ROI implicit pentru NPY simplu / ZIP fără subfoldere</label>
                         <input
                             id="roi_name"
                             name="roi_name"
@@ -425,7 +425,7 @@ def _upload_form_html() -> str:
                             required
                         >
                         <p class="field-help">
-                            Pentru ZIP, același ROI se aplică tuturor fișierelor NPY din arhivă.
+                            Pentru ZIP flat, acest ROI se aplică tuturor fișierelor. Pentru ZIP cu subfoldere, numele folderului devine automat ROI.
                         </p>
                     </div>
 
@@ -536,8 +536,7 @@ def _dataset_formats_help_html() -> str:
                 <h3>NPY / ZIP NPY</h3>
                 <code>[timp, rânduri, coloane]</code>
                 <p class="muted">
-                    Pentru ZIP, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code>,
-                    <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code> sau <code>GNDVI.npy</code>.
+                    Pentru ZIP flat, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code> etc. Pentru mai multe ROI-uri, folosește subfoldere: <code>parcela_nord/NDVI.npy</code>, <code>parcela_sud/NDMI.npy</code>.
                 </p>
             </div>
         </div>

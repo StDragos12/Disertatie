@@ -6,7 +6,7 @@ import re
 import unicodedata
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import pandas as pd
@@ -449,6 +449,39 @@ def infer_index_from_filename(filename: str, fallback: str | None = None) -> str
     )
 
 
+
+
+
+def infer_roi_from_zip_member(member_name: str, default_roi: str = "dataset_roi") -> str:
+    """
+    Dedu ROI-ul din structura unei arhive ZIP.
+
+    Reguli:
+    - NDVI.npy -> ROI-ul introdus în formular
+    - data1/NDVI.npy -> data1
+    - ferma/data1/NDVI.npy -> data1
+
+    Astfel, un ZIP cu subfoldere poate reprezenta mai multe parcele/ROI-uri
+    în același dataset.
+    """
+    default_roi = str(default_roi or "dataset_roi").strip().lower() or "dataset_roi"
+
+    path = PurePosixPath(str(member_name or ""))
+    parts = [
+        part.strip()
+        for part in path.parts
+        if part.strip()
+        and part.strip() not in {".", ".."}
+        and part.strip().lower() != "__macosx"
+    ]
+
+    # Dacă există cel puțin un folder înainte de fișier, ultimul folder devine ROI.
+    if len(parts) >= 2:
+        return slugify(parts[-2])
+
+    return slugify(default_roi)
+
+
 def _load_npy_from_bytes(data: bytes, filename: str) -> np.ndarray:
     try:
         return np.load(io.BytesIO(data), allow_pickle=False)
@@ -584,8 +617,12 @@ def inspect_npy_file(file_storage) -> dict:
                 raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
 
             for name in sorted(npy_names):
-                arr = _load_npy_from_bytes(zf.read(name), name)
-                files_info.append(_inspect_npy_array(arr, Path(name).name))
+                short_name = Path(name).name
+                arr = _load_npy_from_bytes(zf.read(name), short_name)
+                item = _inspect_npy_array(arr, short_name)
+                item["zip_path"] = name
+                item["inferred_roi"] = infer_roi_from_zip_member(name, default_roi="")
+                files_info.append(item)
 
         supported_files = [item for item in files_info if item.get("supported_for_upload")]
         indices = []
@@ -613,34 +650,54 @@ def _npy_zip_to_pixel_dataframe(
 ) -> tuple[pd.DataFrame, list[str]]:
     """
     Citește o arhivă ZIP cu fișiere .npy și le convertește într-un singur CSV pixel-level.
-    Indicele spectral este dedus din numele fiecărui fișier: NDVI.npy, NDMI.npy etc.
+
+    Reguli:
+    - numele fișierului .npy definește indicele spectral: NDVI.npy, NDMI.npy etc.
+    - dacă fișierul este în subfolder, ultimul folder înainte de fișier devine ROI:
+        data1/NDVI.npy -> roi=data1, index=NDVI
+        data2/NDMI.npy -> roi=data2, index=NDMI
+    - dacă ZIP-ul este flat:
+        NDVI.npy -> roi=roi_name introdus în formular
     """
     data = file_storage.read()
     frames = []
     detected_indices = []
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        npy_names = [name for name in zf.namelist() if name.lower().endswith(".npy") and not name.endswith("/")]
+        npy_names = [
+            name
+            for name in zf.namelist()
+            if name.lower().endswith(".npy")
+            and not name.endswith("/")
+            and "__macosx" not in name.lower()
+        ]
+
         if not npy_names:
             raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
 
         for name in sorted(npy_names):
             short_name = Path(name).name
             index_name = infer_index_from_filename(short_name, fallback="")
+            inferred_roi = infer_roi_from_zip_member(name, default_roi=roi_name)
+
             arr = _load_npy_from_bytes(zf.read(name), short_name)
             frame = npy_to_pixel_dataframe(
                 npy_array=arr,
-                roi=roi_name,
+                roi=inferred_roi,
                 index_name=index_name,
                 start_date=start_date,
             )
+
             frames.append(frame)
             detected_indices.append(index_name)
 
     if not frames:
         raise ValueError("Nu s-a putut genera niciun DataFrame din arhiva ZIP.")
 
-    return validate_indices_dataframe(pd.concat(frames, ignore_index=True)), sorted(set(detected_indices))
+    return (
+        validate_indices_dataframe(pd.concat(frames, ignore_index=True)),
+        sorted(set(detected_indices)),
+    )
 
 
 def save_uploaded_dataset(
@@ -693,7 +750,7 @@ def save_uploaded_dataset(
             start_date=start_date,
         )
         original_input_type = "npy_zip"
-        index_detection = "dedus automat din numele fișierelor din ZIP"
+        index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
 
     pixel_level = is_pixel_level_dataframe(df)
 

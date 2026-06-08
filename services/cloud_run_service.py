@@ -1,7 +1,5 @@
 import os
 
-from google.cloud import run_v2
-
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "plucky-environs-416709")
 REGION = os.getenv("CLOUD_RUN_REGION", "europe-west1")
@@ -18,14 +16,23 @@ def trigger_user_dataset_precompute(
     """
     Pornește Cloud Run Job pentru preprocesarea asincronă a unui dataset încărcat.
 
-    Important:
-    Cloud Run override args înlocuiește args-urile definite la deploy.
-    De aceea trebuie inclus explicit și scriptul Python:
-    precompute_user_dataset.py
+    Cloud Run override args înlocuiește args-urile definite la deploy,
+    deci scriptul precompute_user_dataset.py trebuie inclus explicit în args.
+
+    Importul google.cloud.run_v2 este făcut lazy pentru ca aplicația să poată porni
+    local chiar dacă pachetul google-cloud-run nu este instalat.
     """
 
     if not dataset_id:
         raise ValueError("dataset_id este obligatoriu pentru pornirea Cloud Run Job.")
+
+    try:
+        from google.cloud import run_v2
+    except Exception as exc:
+        raise ImportError(
+            "Pachetul google-cloud-run nu este instalat sau nu poate fi importat. "
+            "Rulează: pip install google-cloud-run"
+        ) from exc
 
     client = run_v2.JobsClient()
 
