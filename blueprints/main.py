@@ -474,38 +474,12 @@ def build_farmer_cluster_interpretation(row, selected_index):
     }
 
 
-@main_bp.route("/ml-features")
-def ml_features_page():
-    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
+def get_ml_available_indices(dataset_id: str) -> list[str]:
 
-    user_payload = None
+    dataset_id = normalize_dataset_id(dataset_id)
 
-    if selected_dataset != DEMO_DATASET_ID:
-        available_indices = list_indices(dataset_id=selected_dataset)
-        if not available_indices:
-            available_indices = ["NDVI"]
-
-        selected_index = request.args.get("index", available_indices[0]).upper()
-        if selected_index not in available_indices:
-            selected_index = available_indices[0]
-
-        available_rois = [str(r).lower() for r in get_dataset_rois(selected_dataset)]
-        if not available_rois:
-            available_rois = ["parcela1"]
-
-        roi = request.args.get("roi", available_rois[0]).lower()
-        if roi not in available_rois:
-            roi = available_rois[0]
-
-        try:
-            pixel_count = int(request.args.get("pixels", "500"))
-        except Exception:
-            pixel_count = 500
-        if pixel_count not in DEFAULT_PIXEL_COUNTS:
-            pixel_count = min(DEFAULT_PIXEL_COUNTS, key=lambda x: abs(x - pixel_count))
-
-    else:
-        available_indices = [
+    if dataset_id == DEMO_DATASET_ID:
+        return [
             "NDVI",
             "NDMI",
             "SAVI",
@@ -514,23 +488,90 @@ def ml_features_page():
             "GNDVI",
         ]
 
-        selected_index = request.args.get("index", "NDVI").upper()
+    record = get_dataset_record(dataset_id) or {}
 
-        if selected_index not in available_indices:
-            selected_index = "NDVI"
+    indices = (
+        record.get("indices")
+        or record.get("detected_indices")
+        or []
+    )
 
-        roi = request.args.get("roi", "roi1").lower()
+    indices = [
+        str(index_name).upper()
+        for index_name in indices
+        if str(index_name).strip()
+    ]
 
-        if roi not in ["roi1", "roi2"]:
-            roi = "roi1"
+    if not indices:
+        indices = ["NDVI"]
 
-        try:
-            pixel_count = int(request.args.get("pixels", "1000"))
-        except Exception:
-            pixel_count = 1000
+    return sorted(set(indices))
 
-        if pixel_count not in DEFAULT_PIXEL_COUNTS:
-            pixel_count = 1000
+
+def get_ml_available_rois(dataset_id: str) -> list[str]:
+
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if dataset_id == DEMO_DATASET_ID:
+        return ["roi1", "roi2"]
+
+    record = get_dataset_record(dataset_id) or {}
+
+    rois = record.get("rois") or []
+
+    rois = [
+        str(roi).lower()
+        for roi in rois
+        if str(roi).strip()
+    ]
+
+    if not rois:
+        rois = ["parcela1"]
+
+    return sorted(set(rois))
+
+
+@main_bp.route("/ml-features")
+def ml_features_page():
+    selected_dataset = normalize_dataset_id(
+        request.args.get("dataset", DEMO_DATASET_ID)
+    )
+
+    available_indices = get_ml_available_indices(selected_dataset)
+
+    selected_index = request.args.get(
+        "index",
+        available_indices[0] if available_indices else "NDVI",
+    ).upper()
+
+    if selected_index not in available_indices:
+        selected_index = available_indices[0] if available_indices else "NDVI"
+
+    available_rois = get_ml_available_rois(selected_dataset)
+
+    roi = request.args.get(
+        "roi",
+        available_rois[0] if available_rois else "parcela1",
+    ).lower()
+
+    if roi not in available_rois:
+        roi = available_rois[0] if available_rois else "parcela1"
+
+    try:
+        pixel_count = int(
+            request.args.get(
+                "pixels",
+                "1000" if selected_dataset == DEMO_DATASET_ID else "500",
+            )
+        )
+    except Exception:
+        pixel_count = 1000 if selected_dataset == DEMO_DATASET_ID else 500
+
+    if pixel_count not in DEFAULT_PIXEL_COUNTS:
+        pixel_count = min(
+            DEFAULT_PIXEL_COUNTS,
+            key=lambda x: abs(x - pixel_count),
+        )
 
     index_options = ""
 
@@ -542,10 +583,11 @@ def ml_features_page():
         """
 
     roi_options = ""
-    roi_values_for_options = get_dataset_rois(selected_dataset) if selected_dataset != DEMO_DATASET_ID else ["roi1", "roi2"]
 
-    for roi_name in roi_values_for_options:
+    for roi_name in available_rois:
+        roi_name = str(roi_name).lower()
         selected = "selected" if roi == roi_name else ""
+
         roi_options += f"""
         <option value="{roi_name}" {selected}>{roi_name.upper()}</option>
         """
@@ -579,6 +621,8 @@ def ml_features_page():
 
                 <p class="muted">
                     Rezultatele precompute nu sunt disponibile pentru combinația selectată.
+                    Pentru dataseturile încărcate de utilizator, rezultatele sunt generate
+                    prin Cloud Run și salvate în Cloud Storage.
                 </p>
 
                 <form method="get" class="method-box">
@@ -672,29 +716,47 @@ def ml_features_page():
         legend_title_text="Cluster",
     )
 
-    pca_df = pd.DataFrame(payload["pca_points"])
+    pca_df = pd.DataFrame(payload.get("pca_points", []))
 
-    fig_pca = px.scatter_3d(
-        pca_df,
-        x="PC1",
-        y="PC2",
-        z="PC3",
-        color="cluster_label",
-        hover_data={
-            "pixel_id": True,
-            "risk_score": ":.4f",
-            "mean": ":.4f",
-            "amplitude": ":.4f",
-            "window_start": True,
-            "window_end": True,
-        },
-        title="PCA 3D – vizualizare clustere K-Means",
-    )
+    if not pca_df.empty:
+        fig_pca = px.scatter_3d(
+            pca_df,
+            x="PC1",
+            y="PC2",
+            z="PC3",
+            color="cluster_label",
+            hover_data={
+                "pixel_id": True,
+                "risk_score": ":.4f",
+                "mean": ":.4f",
+                "amplitude": ":.4f",
+                "window_start": True,
+                "window_end": True,
+            },
+            title="PCA 3D – vizualizare clustere K-Means",
+        )
 
-    fig_pca.update_layout(
-        height=650,
-        legend_title_text="Cluster",
-    )
+        fig_pca.update_layout(
+            height=650,
+            legend_title_text="Cluster",
+        )
+
+        pca_html = figure_card(
+            fig_pca,
+            "PCA 3D – rezultat K-Means",
+            "PCA proiectează semnăturile temporale într-un spațiu redus. Culorile reprezintă clusterele atribuite prin K-Means.",
+            section_id="pca_3d",
+        )
+
+    else:
+        pca_html = """
+        <section class="card reveal active">
+            <h2>PCA 3D – rezultat K-Means</h2>
+            <p class="muted">
+                Nu există puncte PCA disponibile pentru această selecție.
+            </p>
+        </section>
+        """
 
     tsne_html = ""
 
@@ -934,7 +996,7 @@ def ml_features_page():
 
             <p class="muted">
                 Rezultatele sunt preprocesate prin Cloud Run Job și încărcate din Cloud Storage.
-                Pagina afișează rapid hărțile și graficele fără recalcularea live a modelului.
+                Pagina afișează hărțile și graficele fără recalcularea live a modelului.
             </p>
 
             <form method="get" class="method-box">
@@ -967,6 +1029,7 @@ def ml_features_page():
 
             <div class="method-box">
                 <strong>Configurație curentă:</strong><br>
+                Dataset: <strong>{get_dataset_display_name(selected_dataset)}</strong><br>
                 Indice: <strong>{selected_index}</strong><br>
                 ROI: <strong>{roi.upper()}</strong><br>
                 Pixeli folosiți la antrenarea modelului: <strong>{metadata["pixel_count"]}</strong><br>
@@ -975,7 +1038,7 @@ def ml_features_page():
             </div>
         </section>
 
-                <section class="card reveal active">
+        <section class="card reveal active">
             <div class="section-heading">
                 <span class="section-kicker">Interpretare automată</span>
                 <h2>Rezumat operațional al analizei</h2>
@@ -1192,12 +1255,7 @@ def ml_features_page():
             section_id="cluster_profiles",
         )}
 
-        {figure_card(
-            fig_pca,
-            "PCA 3D – rezultat K-Means",
-            "PCA proiectează semnăturile temporale într-un spațiu redus. Culorile reprezintă clusterele atribuite prin K-Means.",
-            section_id="pca_3d",
-        )}
+        {pca_html}
 
         {tsne_html}
 
