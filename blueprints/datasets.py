@@ -356,8 +356,7 @@ def _upload_form_html() -> str:
             <div>
                 <h1>Dataset-uri utilizator</h1>
                 <p class="muted">
-                    Platforma acceptă CSV ROI-level, CSV pixel-level, NPY 3D singular și arhive ZIP cu mai multe fișiere NPY.
-                    Pentru NPY, forma acceptată este <strong>[timp, rânduri, coloane]</strong>.
+                    Încarcă un CSV, un NPY 3D sau un ZIP cu fișiere NPY.
                 </p>
             </div>
         </div>
@@ -365,113 +364,64 @@ def _upload_form_html() -> str:
         <form method="post" enctype="multipart/form-data" class="dataset-upload-form">
             <input type="hidden" name="action" value="upload">
 
-            <div class="dataset-form-grid">
+            <div class="dataset-single-form">
 
-                <div class="dataset-form-panel">
-                    <div class="panel-header">
-                        <span class="panel-kicker">Pasul 1</span>
-                        <h2>Informații generale</h2>
-                        <p class="muted">
-                            Definește numele datasetului și încarcă fișierul sursă.
-                        </p>
-                    </div>
-
-                    <div class="form-field">
-                        <label for="display_name">Nume dataset</label>
-                        <input
-                            id="display_name"
-                            name="display_name"
-                            type="text"
-                            placeholder="Ex: Ferma Nord 2026"
-                            required
-                        >
-                        <p class="field-help">
-                            Numele va fi folosit în selectorul de dataseturi din platformă.
-                        </p>
-                    </div>
-
-                    <div class="form-field">
-                        <label for="file">Fișier CSV, NPY sau ZIP cu NPY-uri</label>
-                        <input
-                            id="file"
-                            name="file"
-                            type="file"
-                            accept=".csv,.npy,.zip"
-                            required
-                        >
-                        <p class="field-help">
-                            Pentru ZIP, include fișiere denumite explicit, de exemplu
-                            <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>.
-                        </p>
-                    </div>
+                <div class="form-field dataset-row-field">
+                    <label for="display_name">Nume dataset</label>
+                    <input
+                        id="display_name"
+                        name="display_name"
+                        type="text"
+                        placeholder="Ex: Ferma Nord 2026"
+                        required
+                    >
                 </div>
 
-                <div class="dataset-form-panel">
-                    <div class="panel-header">
-                        <span class="panel-kicker">Pasul 2</span>
-                        <h2>Setări pentru NPY / ZIP</h2>
-                        <p class="muted">
-                            Aceste câmpuri sunt folosite pentru conversia automată NPY → CSV pixel-level.
-                        </p>
-                    </div>
-
-                    <div class="form-field">
-                        <label for="roi_name">ROI implicit pentru NPY simplu / ZIP fără subfoldere</label>
-                        <input
-                            id="roi_name"
-                            name="roi_name"
-                            type="text"
-                            value="parcela1"
-                            required
-                        >
-                        <p class="field-help">
-                            Pentru ZIP flat, acest ROI se aplică tuturor fișierelor. Pentru ZIP cu subfoldere, numele folderului devine automat ROI.
-                        </p>
-                    </div>
-
-                    <div class="form-field">
-                        <label for="index_name">Indice spectral pentru NPY singular</label>
-                        <select id="index_name" name="index_name">
-                            <option value="NDVI">NDVI</option>
-                            <option value="NDMI">NDMI</option>
-                            <option value="SAVI">SAVI</option>
-                            <option value="AVI">AVI</option>
-                            <option value="EVI">EVI</option>
-                            <option value="GNDVI">GNDVI</option>
-                        </select>
-                        <p class="field-help">
-                            Pentru un singur NPY, aplicația încearcă să deducă indicele din numele fișierului.
-                            Dacă nu poate, folosește valoarea selectată aici. Pentru ZIP, indicele este dedus separat din fiecare fișier.
-                        </p>
-                    </div>
-
-                    <div class="form-field">
-                        <label for="start_date">Prima lună din seria temporală NPY</label>
-                        <input
-                            id="start_date"
-                            name="start_date"
-                            type="month"
-                            value="2021-01"
-                        >
-                        <p class="field-help">
-                            Exemplu: pentru un fișier cu forma <code>(36, 24, 32)</code> și prima lună <code>2021-01</code>,
-                            aplicația generează automat observații lunare până în <code>2023-12</code>.
-                        </p>
-                    </div>
+                <div class="form-field dataset-row-field">
+                    <label for="file">Fișier CSV, NPY sau ZIP</label>
+                    <input
+                        id="file"
+                        name="file"
+                        type="file"
+                        accept=".csv,.npy,.zip"
+                        required
+                    >
                 </div>
 
-            </div>
-
-            <div class="dataset-upload-footer">
-                <div class="dataset-note">
-                    <strong>Observație:</strong>
-                    CSV ROI-level este suficient pentru analiză temporală și forecast.
-                    Pentru ML pe pixeli sunt necesare date pixel-level sau NPY 3D.
+                <div class="form-field dataset-row-field">
+                    <label for="roi_name">ROI implicit</label>
+                    <input
+                        id="roi_name"
+                        name="roi_name"
+                        type="text"
+                        value="parcela1"
+                        required
+                    >
                 </div>
 
-                <button type="submit" class="btn-primary">
-                    Încarcă dataset
-                </button>
+                <div class="form-field dataset-row-field">
+                    <label for="start_date">Start temporal</label>
+                    <input
+                        id="start_date"
+                        name="start_date"
+                        type="month"
+                        value="2021-01"
+                    >
+                </div>
+
+                <div class="dataset-format-note">
+                    NPY acceptat: <code>[timp, rânduri, coloane]</code>.
+                    Numele fișierului trebuie să conțină indicele:
+                    <code>NDVI</code>, <code>NDMI</code>, <code>SAVI</code>,
+                    <code>AVI</code>, <code>EVI</code> sau <code>GNDVI</code>.
+                </div>
+
+                <div class="dataset-submit-row">
+                    <button type="submit" class="btn-primary">
+                        Încarcă dataset
+                    </button>
+                </div>
+
             </div>
         </form>
     </section>
@@ -536,7 +486,8 @@ def _dataset_formats_help_html() -> str:
                 <h3>NPY / ZIP NPY</h3>
                 <code>[timp, rânduri, coloane]</code>
                 <p class="muted">
-                    Pentru ZIP flat, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code> etc. Pentru mai multe ROI-uri, folosește subfoldere: <code>parcela_nord/NDVI.npy</code>, <code>parcela_sud/NDMI.npy</code>.
+                    Pentru ZIP, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code>,
+                    <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code> sau <code>GNDVI.npy</code>.
                 </p>
             </div>
         </div>
@@ -562,7 +513,6 @@ def datasets_page():
                 display_name = request.form.get("display_name", "Dataset utilizator")
                 uploaded_file = request.files.get("file")
                 roi_name = request.form.get("roi_name", "parcela1")
-                index_name = request.form.get("index_name", "NDVI")
                 start_date = request.form.get("start_date", "2021-01")
 
                 candidate_dataset_id = normalize_dataset_id(display_name)
@@ -573,7 +523,6 @@ def datasets_page():
                         display_name=display_name,
                         file_storage=uploaded_file,
                         roi_name=roi_name,
-                        index_name=index_name,
                         start_date=start_date,
                     )
 

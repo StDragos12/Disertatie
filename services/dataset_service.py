@@ -415,39 +415,21 @@ def build_dataset_options_html(selected_dataset: str = DEMO_DATASET_ID) -> str:
     return html
 
 
+SUPPORTED_INDICES = ["NDVI", "NDMI", "SAVI", "AVI", "EVI", "GNDVI"]
 
-def infer_index_from_filename(filename: str, fallback: str | None = None) -> str:
-    """
-    Dedu indicele spectral din numele fișierului.
 
-    Exemple acceptate:
-    - NDVI.npy
-    - roi1_NDMI_stack.npy
-    - parcela_savi_2021.npy
+def infer_index_from_filename(filename: str) -> str:
+    name = str(filename or "").upper()
 
-    Dacă nu se găsește un indice cunoscut, se folosește fallback-ul introdus manual.
-    """
-    name = Path(str(filename or "")).stem.upper()
-    tokens = re.split(r"[^A-Z0-9]+", name)
-
-    for token in tokens:
-        if token in KNOWN_SPECTRAL_INDICES:
-            return token
-
-    # Caz util pentru nume de forma "myNDVIfile", deși recomandarea rămâne NDVI.npy.
-    for index_name in KNOWN_SPECTRAL_INDICES:
+    for index_name in SUPPORTED_INDICES:
         if index_name in name:
             return index_name
 
-    fallback = str(fallback or "").strip().upper()
-    if fallback:
-        return fallback
-
     raise ValueError(
-        "Nu am putut deduce indicele spectral din numele fișierului. "
-        "Redenumește fișierul, de exemplu NDVI.npy / NDMI.npy, sau completează manual indicele."
+        "Nu s-a putut deduce indicele spectral din numele fișierului. "
+        "Redenumește fișierul folosind unul dintre indicii acceptați: "
+        "NDVI.npy, NDMI.npy, SAVI.npy, AVI.npy, EVI.npy sau GNDVI.npy."
     )
-
 
 
 
@@ -564,12 +546,17 @@ def npy_to_pixel_dataframe(
 def _inspect_npy_array(arr: np.ndarray, filename: str) -> dict:
     arr_float = arr.astype(float) if np.issubdtype(arr.dtype, np.number) else None
 
+    try:
+        inferred_index = infer_index_from_filename(filename)
+    except ValueError:
+        inferred_index = "nedetectat"
+
     info = {
         "filename": filename,
         "shape": tuple(int(x) for x in arr.shape),
         "ndim": int(arr.ndim),
         "dtype": str(arr.dtype),
-        "inferred_index": infer_index_from_filename(filename, fallback="") if any(idx in Path(filename).stem.upper() for idx in KNOWN_SPECTRAL_INDICES) else "nedetectat",
+        "inferred_index": inferred_index,
         "supported_for_upload": bool(arr.ndim == 3 and np.issubdtype(arr.dtype, np.number)),
     }
 
@@ -677,19 +664,19 @@ def _npy_zip_to_pixel_dataframe(
 
         for name in sorted(npy_names):
             short_name = Path(name).name
-            index_name = infer_index_from_filename(short_name, fallback="")
+            inferred_index = infer_index_from_filename(name)
             inferred_roi = infer_roi_from_zip_member(name, default_roi=roi_name)
 
             arr = _load_npy_from_bytes(zf.read(name), short_name)
             frame = npy_to_pixel_dataframe(
                 npy_array=arr,
                 roi=inferred_roi,
-                index_name=index_name,
+                index_name=inferred_index,
                 start_date=start_date,
             )
 
             frames.append(frame)
-            detected_indices.append(index_name)
+            detected_indices.append(inferred_index)
 
     if not frames:
         raise ValueError("Nu s-a putut genera niciun DataFrame din arhiva ZIP.")
@@ -704,7 +691,6 @@ def save_uploaded_dataset(
     display_name: str,
     file_storage,
     roi_name: str = "dataset_roi",
-    index_name: str = "NDVI",
     start_date: str = "2021-01-01",
 ) -> dict:
     if file_storage is None or not getattr(file_storage, "filename", ""):
@@ -732,7 +718,7 @@ def save_uploaded_dataset(
         original_input_type = "csv"
         index_detection = "din coloana index a CSV-ului"
     elif suffix_ext == ".npy":
-        detected_index = infer_index_from_filename(file_storage.filename, fallback=index_name)
+        detected_index = infer_index_from_filename(file_storage.filename)
         arr = np.load(file_storage, allow_pickle=False)
         df = npy_to_pixel_dataframe(
             npy_array=arr,
@@ -742,7 +728,7 @@ def save_uploaded_dataset(
         )
         original_input_type = "npy_3d"
         detected_indices = [detected_index]
-        index_detection = "dedus din numele fișierului .npy sau din câmpul manual"
+        index_detection = "dedus strict din numele fișierului .npy"
     else:
         df, detected_indices = _npy_zip_to_pixel_dataframe(
             file_storage=file_storage,
