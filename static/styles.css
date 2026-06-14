@@ -1718,8 +1718,10 @@ body.app-shell {
     width: 100%;
   }
 }
-
-/* Final simplified dataset upload form */
+/* ==========================================================
+   Dataset upload - simplified single-column layout override
+   Added to override older two-column dataset form styles.
+   ========================================================== */
 .dataset-upload-card {
   max-width: 980px;
   margin-left: auto;

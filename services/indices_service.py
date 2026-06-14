@@ -12,8 +12,8 @@ except Exception:
 from services.dataset_service import (
     DEMO_DATASET_ID,
     normalize_dataset_id,
-    load_dataset_dataframe,
-    as_roi_level_dataframe,
+    load_dataset_roi_dataframe,
+    get_dataset_record,
 )
 
 
@@ -74,12 +74,26 @@ def load_indices_dataframe(dataset_id: str = DEMO_DATASET_ID) -> pd.DataFrame:
     if dataset_id == DEMO_DATASET_ID:
         return _load_demo_indices_csv()
 
-    # Dataseturile pixel-level sunt agregate automat la nivel ROI/date/index
-    # pentru modulele de analiză spectrală, Cross-Index, validare și forecast.
-    return as_roi_level_dataframe(load_dataset_dataframe(dataset_id))
+    # Pentru dataseturile user se citește varianta ROI-level preagregată
+    # user_datasets/<dataset_id>/roi_timeseries.csv.
+    # Astfel Cross-Index, staționaritatea, STL și forecastul nu mai citesc
+    # CSV-ul pixel-level mare la fiecare request.
+    return load_dataset_roi_dataframe(dataset_id)
 
 
 def list_indices(dataset_id: str = DEMO_DATASET_ID):
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if dataset_id != DEMO_DATASET_ID:
+        record = get_dataset_record(dataset_id)
+
+        if record and record.get("indices"):
+            return sorted(
+                str(index_name).upper()
+                for index_name in record.get("indices", [])
+                if str(index_name).strip()
+            )
+
     df = load_indices_dataframe(dataset_id)
 
     return sorted(

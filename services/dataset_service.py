@@ -26,6 +26,7 @@ DEMO_DATASET_ID = "demo"
 LOCAL_DATASET_DIR = Path("data") / "user_datasets"
 DATASETS_INDEX_BLOB = "user_datasets/index.json"
 STATUS_FILENAME = "status.json"
+ROI_TIMESERIES_FILENAME = "roi_timeseries.csv"
 REQUIRED_COLUMNS = {"date", "roi", "index", "value"}
 PIXEL_COLUMNS = {"pixel_id", "row", "col"}
 SUPPORTED_UPLOAD_EXTENSIONS = {".csv", ".npy", ".zip"}
@@ -69,12 +70,20 @@ def _local_dataset_path(dataset_id: str) -> Path:
     return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / "indices_timeseries.csv"
 
 
+def _local_roi_dataset_path(dataset_id: str) -> Path:
+    return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / ROI_TIMESERIES_FILENAME
+
+
 def _local_manifest_path(dataset_id: str) -> Path:
     return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / "manifest.json"
 
 
 def _gcs_dataset_blob(dataset_id: str) -> str:
     return f"user_datasets/{normalize_dataset_id(dataset_id)}/indices_timeseries.csv"
+
+
+def _gcs_roi_dataset_blob(dataset_id: str) -> str:
+    return f"user_datasets/{normalize_dataset_id(dataset_id)}/{ROI_TIMESERIES_FILENAME}"
 
 
 def _gcs_manifest_blob(dataset_id: str) -> str:
@@ -313,6 +322,62 @@ def as_roi_level_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         .mean()
         .sort_values(["index", "roi", "date"])
     )
+
+
+def build_roi_timeseries_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Construiește varianta ROI-level mică a unui dataset.
+
+    Pentru dataseturi pixel-level, reduce datele la:
+      date, roi, index, value
+
+    Această versiune este folosită de paginile temporale, Cross-Index,
+    staționaritate și forecast, ca să nu se mai citească CSV-ul pixel-level
+    mare la fiecare request.
+    """
+    return as_roi_level_dataframe(df)
+
+
+def _write_roi_timeseries(dataset_id: str, roi_df: pd.DataFrame) -> None:
+    dataset_id = normalize_dataset_id(dataset_id)
+    csv_text = roi_df.to_csv(index=False)
+
+    if using_gcs():
+        client = _storage_client()
+        bucket = client.bucket(_bucket_name())
+        bucket.blob(_gcs_roi_dataset_blob(dataset_id)).upload_from_string(
+            csv_text,
+            content_type="text/csv; charset=utf-8",
+        )
+        return
+
+    path = _local_roi_dataset_path(dataset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(csv_text, encoding="utf-8")
+
+
+def _read_roi_timeseries_if_exists(dataset_id: str) -> pd.DataFrame | None:
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if using_gcs():
+        client = _storage_client()
+        bucket = client.bucket(_bucket_name())
+        blob = bucket.blob(_gcs_roi_dataset_blob(dataset_id))
+
+        if not blob.exists():
+            return None
+
+        df = pd.read_csv(io.StringIO(blob.download_as_text(encoding="utf-8")))
+        return validate_indices_dataframe(df)
+
+    path = _local_roi_dataset_path(dataset_id)
+
+    if not path.exists():
+        return None
+
+    df = pd.read_csv(path)
+    return validate_indices_dataframe(df)
+
 
 
 def _read_index_local() -> dict:
@@ -739,8 +804,11 @@ def save_uploaded_dataset(
         index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
 
     pixel_level = is_pixel_level_dataframe(df)
+    roi_df = build_roi_timeseries_dataframe(df)
 
     csv_text = df.to_csv(index=False)
+    roi_csv_text = roi_df.to_csv(index=False)
+
     now = datetime.now(timezone.utc).isoformat()
     rois = sorted(df["roi"].unique().tolist())
     indices = sorted(df["index"].unique().tolist())
@@ -758,6 +826,8 @@ def save_uploaded_dataset(
         "rois": rois,
         "indices": indices,
         "csv_path": f"user_datasets/{dataset_id}/indices_timeseries.csv",
+        "roi_csv_path": f"user_datasets/{dataset_id}/{ROI_TIMESERIES_FILENAME}",
+        "roi_rows": int(len(roi_df)),
     }
     manifest = dict(record)
     manifest["message"] = (
@@ -774,6 +844,9 @@ def save_uploaded_dataset(
         bucket.blob(_gcs_dataset_blob(dataset_id)).upload_from_string(
             csv_text, content_type="text/csv; charset=utf-8"
         )
+        bucket.blob(_gcs_roi_dataset_blob(dataset_id)).upload_from_string(
+            roi_csv_text, content_type="text/csv; charset=utf-8"
+        )
         bucket.blob(_gcs_manifest_blob(dataset_id)).upload_from_string(
             json.dumps(manifest, ensure_ascii=False, indent=2),
             content_type="application/json; charset=utf-8",
@@ -782,6 +855,7 @@ def save_uploaded_dataset(
         dataset_dir = LOCAL_DATASET_DIR / dataset_id
         dataset_dir.mkdir(parents=True, exist_ok=True)
         (dataset_dir / "indices_timeseries.csv").write_text(csv_text, encoding="utf-8")
+        (dataset_dir / ROI_TIMESERIES_FILENAME).write_text(roi_csv_text, encoding="utf-8")
         (dataset_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     _upsert_dataset_record(record)
@@ -799,6 +873,8 @@ def save_uploaded_dataset(
             "indices": indices,
             "rois": rois,
             "rows": int(len(df)),
+            "roi_rows": int(len(roi_df)),
+            "roi_csv_path": f"user_datasets/{dataset_id}/{ROI_TIMESERIES_FILENAME}",
         },
     )
 
@@ -825,16 +901,42 @@ def load_dataset_dataframe(dataset_id: str) -> pd.DataFrame:
 
 
 def load_dataset_roi_dataframe(dataset_id: str) -> pd.DataFrame:
-    return as_roi_level_dataframe(load_dataset_dataframe(dataset_id))
+    """
+    Încarcă varianta ROI-level preagregată a datasetului.
+
+    Pentru dataseturile pixel-level mari, această funcție NU trebuie să citească
+    indices_timeseries.csv la fiecare request. Citește roi_timeseries.csv.
+    Dacă fișierul lipsește pentru un dataset vechi, îl construiește o singură dată
+    din CSV-ul complet și îl salvează pentru requesturile următoare.
+    """
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if dataset_id == DEMO_DATASET_ID:
+        raise ValueError("Datasetul demo este citit prin services.indices_service.")
+
+    cached_df = _read_roi_timeseries_if_exists(dataset_id)
+
+    if cached_df is not None:
+        return cached_df
+
+    full_df = load_dataset_dataframe(dataset_id)
+    roi_df = build_roi_timeseries_dataframe(full_df)
+    _write_roi_timeseries(dataset_id, roi_df)
+
+    return roi_df
 
 
 def has_pixel_level_data(dataset_id: str) -> bool:
     dataset_id = normalize_dataset_id(dataset_id)
+
     if dataset_id == DEMO_DATASET_ID:
         return False
+
     record = get_dataset_record(dataset_id)
-    if record and record.get("input_type") == "pixel_csv":
-        return True
+
+    if record:
+        return record.get("input_type") == "pixel_csv"
+
     try:
         return is_pixel_level_dataframe(load_dataset_dataframe(dataset_id))
     except Exception:
@@ -843,18 +945,56 @@ def has_pixel_level_data(dataset_id: str) -> bool:
 
 def get_dataset_rois(dataset_id: str) -> list[str]:
     dataset_id = normalize_dataset_id(dataset_id)
+
     if dataset_id == DEMO_DATASET_ID:
         return ["roi1", "roi2"]
-    df = load_dataset_dataframe(dataset_id)
-    return sorted(df["roi"].dropna().astype(str).str.lower().unique().tolist())
+
+    record = get_dataset_record(dataset_id)
+
+    if record and record.get("rois"):
+        return sorted(
+            str(roi).lower()
+            for roi in record.get("rois", [])
+            if str(roi).strip()
+        )
+
+    df = load_dataset_roi_dataframe(dataset_id)
+
+    return sorted(
+        df["roi"]
+        .dropna()
+        .astype(str)
+        .str.lower()
+        .unique()
+        .tolist()
+    )
 
 
 def get_dataset_indices(dataset_id: str) -> list[str]:
     dataset_id = normalize_dataset_id(dataset_id)
+
     if dataset_id == DEMO_DATASET_ID:
         return []
-    df = load_dataset_dataframe(dataset_id)
-    return sorted(df["index"].dropna().astype(str).str.upper().unique().tolist())
+
+    record = get_dataset_record(dataset_id)
+
+    if record and record.get("indices"):
+        return sorted(
+            str(index_name).upper()
+            for index_name in record.get("indices", [])
+            if str(index_name).strip()
+        )
+
+    df = load_dataset_roi_dataframe(dataset_id)
+
+    return sorted(
+        df["index"]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .unique()
+        .tolist()
+    )
 
 
 def get_dataset_csv_bytes(dataset_id: str) -> tuple[bytes, str]:
