@@ -1803,16 +1803,23 @@ body.app-shell {
   }
 }
 
+
+/* ================================
+   Dataset page final polish
+   ================================ */
 .dataset-upload-card,
 .dataset-inspect-card,
+.dataset-preview-card,
 .compact-card {
   max-width: 980px;
   margin-left: auto;
   margin-right: auto;
 }
 
-.dataset-upload-card {
-  padding: 28px;
+.dataset-upload-card,
+.dataset-inspect-card,
+.dataset-preview-card {
+  padding: 24px 28px;
 }
 
 .dataset-single-form {
@@ -1820,41 +1827,8 @@ body.app-shell {
   gap: 16px;
 }
 
-.dataset-row-field label,
-.inspect-file-field label {
-  display: block;
-  margin-bottom: 8px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.dataset-row-field input,
-.inspect-file-field input {
-  width: 100%;
-}
-
-.dataset-format-note {
-  font-size: 0.92rem;
-  line-height: 1.55;
-  padding: 13px 15px;
-}
-
-.dataset-submit-row {
-  margin-top: 4px;
-}
-
-.dataset-submit-row .btn-primary {
-  min-width: 175px;
-  height: 44px;
-}
-
-/* Inspect form: input + button pe aceeași linie */
-.dataset-inspect-card {
-  padding: 24px 28px;
-}
-
 .inspect-heading {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .inspect-heading h2 {
@@ -1863,22 +1837,32 @@ body.app-shell {
 
 .inspect-heading p {
   margin: 0;
-  max-width: 720px;
+  max-width: 760px;
 }
 
 .inspect-inline-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
   gap: 16px;
-  margin-top: 10px;
+  align-items: end;
+  margin-top: 8px;
 }
 
 .inspect-file-field {
   min-width: 0;
 }
 
-.inspect-file-field input[type="file"] {
+.inspect-file-field label,
+.dataset-row-field label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.inspect-file-field input[type="file"],
+.dataset-row-field input[type="file"] {
+  width: 100%;
   height: 42px;
   padding: 9px 12px;
   border-radius: 12px;
@@ -1889,30 +1873,18 @@ body.app-shell {
 
 .inspect-submit-btn {
   height: 42px;
-  min-width: 165px;
+  min-width: 170px;
+  margin: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   white-space: nowrap;
-  margin: 0;
 }
 
-/* Preview CSV/NPY mai aerisit */
-.dataset-preview-card,
-.card:has(h2:nth-child(1)) {
-  overflow: hidden;
-}
-
-.stats-table {
+.dataset-format-note {
   font-size: 0.92rem;
-}
-
-.table-wrap {
-  overflow-x: auto;
-}
-
-.card .method-box {
   line-height: 1.55;
+  padding: 13px 15px;
 }
 
 .method-box code,
@@ -1927,7 +1899,6 @@ body.app-shell {
   font-weight: 700;
 }
 
-/* Tabel dataseturi: mai curat */
 .stats-table th,
 .stats-table td {
   padding: 12px 14px;
@@ -1936,8 +1907,8 @@ body.app-shell {
 
 .dataset-actions {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
 }
 
@@ -1948,7 +1919,6 @@ body.app-shell {
   justify-content: center;
 }
 
-/* Responsive */
 @media (max-width: 760px) {
   .inspect-inline-form {
     grid-template-columns: 1fr;
@@ -1961,6 +1931,7 @@ body.app-shell {
 
   .dataset-upload-card,
   .dataset-inspect-card,
+  .dataset-preview-card,
   .compact-card {
     padding: 20px;
   }

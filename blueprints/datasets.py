@@ -13,7 +13,7 @@ from services.dataset_service import (
     get_dataset_csv_bytes,
     get_dataset_csv_signed_url,
     delete_dataset,
-    inspect_dataset_file,
+    inspect_uploaded_file,
     has_pixel_level_data,
     update_dataset_status,
     normalize_dataset_id,
@@ -309,36 +309,50 @@ def _csv_preview_html(info: dict | None) -> str:
         return ""
 
     supported = "Da" if info.get("supported_for_upload") else "Nu"
-    input_kind = info.get("input_kind", "-")
     columns = ", ".join(info.get("columns", [])) or "-"
     rois = ", ".join(info.get("rois", [])) or "-"
-    indices = ", ".join(info.get("indices_detected", [])) or "-"
-    bands = ", ".join(info.get("bands_detected", [])) or "-"
-    pixel_level = "Da" if info.get("pixel_level") else "Nu"
-    note = info.get("note", "")
+    indices = ", ".join(info.get("indices_detected", info.get("indices_generated", []))) or "-"
+    missing_indices = ", ".join(info.get("missing_for_indices_csv", [])) or "-"
+    missing_bands = ", ".join(info.get("missing_for_bands_csv", [])) or "-"
+
+    extra_rows = ""
+    for key, label in [
+        ("zip_path", "Fișier în ZIP"),
+        ("rows", "Rânduri"),
+        ("date_min", "Data minimă"),
+        ("date_max", "Data maximă"),
+        ("pixels", "Pixeli"),
+    ]:
+        if info.get(key) is not None:
+            extra_rows += f"<tr><td>{_esc(label)}</td><td>{_esc(info.get(key))}</td></tr>"
+
+    missing_html = ""
+    if not info.get("supported_for_upload"):
+        missing_html = f"""
+        <tr><td>Lipsește pentru CSV cu indici</td><td>{_esc(missing_indices)}</td></tr>
+        <tr><td>Lipsește pentru CSV cu benzi</td><td>{_esc(missing_bands)}</td></tr>
+        """
 
     return f"""
-    <section class="card reveal active">
+    <section class="card reveal active dataset-preview-card">
         <div class="card-top-line"></div>
         <h2>Rezultat inspectare CSV</h2>
 
         <div class="method-box">
             <strong>Compatibil cu upload:</strong> {supported}<br>
-            <strong>Tip detectat:</strong> {_esc(input_kind)}<br>
-            <strong>Rânduri valide:</strong> {_esc(info.get("rows", "-"))}<br>
-            <strong>Pixel-level:</strong> {pixel_level}<br>
-            <strong>Interval temporal:</strong> {_esc(info.get("date_min", "-"))} – {_esc(info.get("date_max", "-"))}<br>
+            <strong>Tip detectat:</strong> {_esc(info.get("input_kind", "-"))}<br>
             <strong>ROI-uri:</strong> {_esc(rois)}<br>
-            <strong>Benzi detectate:</strong> {_esc(bands)}<br>
-            <strong>Indici detectați / calculați:</strong> {_esc(indices)}<br><br>
-            {_esc(note)}
+            <strong>Indici detectați/generați:</strong> {_esc(indices)}<br><br>
+            {_esc(info.get("note", ""))}
         </div>
 
         <div class="table-wrap">
             <table class="stats-table">
                 <tbody>
-                    <tr><td>Fișier</td><td>{_esc(info.get("filename", "-"))}</td></tr>
+                    <tr><td>Fișier</td><td>{_esc(info.get("filename"))}</td></tr>
                     <tr><td>Coloane</td><td>{_esc(columns)}</td></tr>
+                    {extra_rows}
+                    {missing_html}
                 </tbody>
             </table>
         </div>
@@ -572,14 +586,10 @@ def datasets_page():
         action = request.form.get("action", "upload")
 
         try:
-            if action in {"inspect_dataset", "inspect_npy"}:
-                uploaded_file = (
-                    request.files.get("dataset_preview_file")
-                    or request.files.get("npy_preview_file")
-                )
-                info = inspect_dataset_file(uploaded_file)
-
-                if info.get("type") == "csv_file":
+            if action in {"inspect_file", "inspect_npy"}:
+                uploaded_file = request.files.get("preview_file") or request.files.get("npy_preview_file")
+                info = inspect_uploaded_file(uploaded_file)
+                if info.get("type") in {"csv", "zip_csv_collection"}:
                     preview_html = _csv_preview_html(info)
                 else:
                     preview_html = _npy_preview_html(info)
@@ -730,18 +740,47 @@ def datasets_page():
 def download_dataset_csv(dataset_id: str):
     dataset_id = normalize_dataset_id(dataset_id)
 
-    if using_gcs() and dataset_id != DEMO_DATASET_ID:
-        signed_url, _ = get_dataset_csv_signed_url(dataset_id)
-        return redirect(signed_url)
+    try:
+        if using_gcs() and dataset_id != DEMO_DATASET_ID:
+            signed_url, _ = get_dataset_csv_signed_url(dataset_id)
+            return redirect(signed_url)
 
-    data, filename = get_dataset_csv_bytes(dataset_id)
+        data, filename = get_dataset_csv_bytes(dataset_id)
 
-    return send_file(
-        io.BytesIO(data),
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name=filename,
-    )
+        return send_file(
+            io.BytesIO(data),
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as exc:
+        return render_template(
+            "base.html",
+            title="Descărcare CSV",
+            nav_html=render_nav(request.path),
+            content=f"""
+            <section class="card reveal active">
+                <div class="card-top-line"></div>
+                <h1>CSV-ul nu a putut fi descărcat din aplicație</h1>
+                <p class="muted">
+                    Datasetul există, dar App Engine nu a putut genera linkul temporar de descărcare.
+                    Pentru CSV-uri mari, descarcă fișierul direct din Cloud Storage.
+                </p>
+
+                <div class="method-box error-box">
+                    <strong>Detalii:</strong><br>
+                    {_esc(exc)}
+                </div>
+
+                <div class="method-box">
+                    <strong>Comandă Cloud Shell:</strong><br>
+                    <code>gcloud storage cp gs://ndvi-spectral-arrays-plucky-environs-416709/user_datasets/{_esc(dataset_id)}/indices_timeseries.csv .</code>
+                </div>
+
+                <a class="btn-link secondary" href="/datasets">Înapoi la dataseturi</a>
+            </section>
+            """,
+        ), 500
 
 
 @datasets_bp.route("/datasets/<dataset_id>/delete", methods=["POST"])

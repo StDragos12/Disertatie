@@ -906,92 +906,142 @@ def inspect_npy_file(file_storage) -> dict:
 
 def inspect_csv_file(file_storage) -> dict:
     """
-    Inspectează un CSV înainte de upload.
+    Inspectează un CSV fără să îl salveze ca dataset.
 
-    Acceptă:
-    1) CSV cu indici:
-       date, roi, index, value
-       date, roi, index, pixel_id, row, col, value
-
-    2) CSV cu benzi:
-       date, roi, pixel_id, row, col, nir, red, green, blue, swir
+    Detectează automat:
+    - CSV cu benzi: date,roi,pixel_id,row,col,nir,red,green,blue,swir
+    - CSV cu indici: date,roi,index,value sau date,roi,index,pixel_id,row,col,value
     """
     if file_storage is None or not getattr(file_storage, "filename", ""):
         raise ValueError("Nu a fost selectat niciun fișier CSV.")
 
-    filename = file_storage.filename
-    suffix = Path(filename).suffix.lower()
+    df = pd.read_csv(file_storage)
+    columns = [str(c).strip().lower() for c in df.columns]
+    cols = set(columns)
 
-    if suffix != ".csv":
-        raise ValueError("Pentru inspectare CSV este acceptat doar un fișier .csv.")
+    info = {
+        "filename": getattr(file_storage, "filename", "upload.csv"),
+        "type": "csv",
+        "rows": int(len(df)),
+        "columns": columns,
+        "supported_for_upload": False,
+        "input_kind": "unknown_csv",
+        "note": "CSV-ul nu se potrivește cu formatele acceptate.",
+    }
 
-    raw_df = pd.read_csv(file_storage)
-    columns = [str(column) for column in raw_df.columns]
+    if has_band_columns(df):
+        clean = validate_bands_dataframe(df)
+        info.update({
+            "supported_for_upload": True,
+            "input_kind": "spectral_bands_csv",
+            "pixel_level": True,
+            "rois": sorted(clean["roi"].dropna().astype(str).str.lower().unique().tolist()),
+            "date_min": pd.to_datetime(clean["date"]).min().strftime("%Y-%m-%d"),
+            "date_max": pd.to_datetime(clean["date"]).max().strftime("%Y-%m-%d"),
+            "pixels": int(clean["pixel_id"].nunique()),
+            "indices_generated": sorted(SUPPORTED_INDICES),
+            "note": "CSV cu benzi detectat. Platforma va calcula automat NDVI, NDMI, SAVI, EVI, GNDVI și AVI.",
+        })
+        return info
 
-    if raw_df.empty:
-        raise ValueError("CSV-ul este gol.")
+    if REQUIRED_COLUMNS.issubset(cols):
+        clean = validate_indices_dataframe(df)
+        info.update({
+            "supported_for_upload": True,
+            "input_kind": "spectral_indices_csv",
+            "pixel_level": is_pixel_level_dataframe(clean),
+            "rois": sorted(clean["roi"].dropna().astype(str).str.lower().unique().tolist()),
+            "indices_detected": sorted(clean["index"].dropna().astype(str).str.upper().unique().tolist()),
+            "date_min": pd.to_datetime(clean["date"]).min().strftime("%Y-%m-%d"),
+            "date_max": pd.to_datetime(clean["date"]).max().strftime("%Y-%m-%d"),
+            "pixels": int(clean["pixel_id"].nunique()) if is_pixel_level_dataframe(clean) else None,
+            "note": "CSV cu indici detectat. Platforma va folosi valorile existente din coloana value.",
+        })
+        return info
+
+    missing_index = sorted(REQUIRED_COLUMNS - cols)
+    missing_bands = sorted(REQUIRED_BAND_COLUMNS - cols)
+    info["missing_for_indices_csv"] = missing_index
+    info["missing_for_bands_csv"] = missing_bands
+    return info
+
+
+def _csv_zip_to_dataframes(file_storage) -> tuple[pd.DataFrame, list[str], pd.DataFrame | None, str]:
+    """
+    Acceptă ZIP care conține un singur CSV sau primul CSV valid găsit.
+    """
+    data = file_storage.read()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        csv_names = [
+            name for name in zf.namelist()
+            if name.lower().endswith(".csv")
+            and not name.endswith("/")
+            and "__macosx" not in name.lower()
+        ]
+        if not csv_names:
+            raise ValueError("Arhiva ZIP nu conține fișiere .csv.")
+
+        csv_name = sorted(csv_names)[0]
+        raw_df = pd.read_csv(io.BytesIO(zf.read(csv_name)))
 
     if has_band_columns(raw_df):
         bands_df = validate_bands_dataframe(raw_df)
-        rois = sorted(bands_df["roi"].dropna().astype(str).str.lower().unique().tolist())
-        date_min = pd.to_datetime(bands_df["date"]).min().strftime("%Y-%m-%d")
-        date_max = pd.to_datetime(bands_df["date"]).max().strftime("%Y-%m-%d")
-        return {
-            "filename": filename,
-            "type": "csv_file",
-            "input_kind": "spectral_bands_csv",
-            "supported_for_upload": True,
-            "rows": int(len(bands_df)),
-            "columns": columns,
-            "pixel_level": True,
-            "rois": rois,
-            "date_min": date_min,
-            "date_max": date_max,
-            "bands_detected": ["NIR", "RED", "GREEN", "BLUE", "SWIR"],
-            "indices_detected": sorted(SUPPORTED_INDICES),
-            "note": "CSV cu benzi detectat. Platforma va calcula automat NDVI, NDMI, SAVI, EVI, GNDVI și AVI.",
-        }
+        df = bands_dataframe_to_indices_dataframe(bands_df)
+        return df, sorted(SUPPORTED_INDICES), bands_df, "csv_zip_bands"
 
-    indices_df = validate_indices_dataframe(raw_df)
-    rois = sorted(indices_df["roi"].dropna().astype(str).str.lower().unique().tolist())
-    indices = sorted(indices_df["index"].dropna().astype(str).str.upper().unique().tolist())
-    date_min = pd.to_datetime(indices_df["date"]).min().strftime("%Y-%m-%d")
-    date_max = pd.to_datetime(indices_df["date"]).max().strftime("%Y-%m-%d")
-
-    return {
-        "filename": filename,
-        "type": "csv_file",
-        "input_kind": "spectral_indices_csv",
-        "supported_for_upload": True,
-        "rows": int(len(indices_df)),
-        "columns": columns,
-        "pixel_level": is_pixel_level_dataframe(indices_df),
-        "rois": rois,
-        "date_min": date_min,
-        "date_max": date_max,
-        "bands_detected": [],
-        "indices_detected": indices,
-        "note": "CSV cu indici detectat. Platforma va folosi valorile din coloana value.",
-    }
+    df = validate_indices_dataframe(raw_df)
+    indices = sorted(df["index"].dropna().astype(str).str.upper().unique().tolist())
+    return df, indices, None, "csv_zip_indices"
 
 
-def inspect_dataset_file(file_storage) -> dict:
+def inspect_uploaded_file(file_storage) -> dict:
     """
-    Inspectează automat CSV, NPY sau ZIP.
+    Inspectare generică pentru CSV, NPY sau ZIP.
+    ZIP-ul poate conține CSV sau NPY.
     """
     if file_storage is None or not getattr(file_storage, "filename", ""):
         raise ValueError("Nu a fost selectat niciun fișier CSV, NPY sau ZIP.")
 
-    suffix = Path(file_storage.filename).suffix.lower()
+    filename = file_storage.filename
+    suffix = Path(filename).suffix.lower()
 
     if suffix == ".csv":
         return inspect_csv_file(file_storage)
 
     if suffix in {".npy", ".zip"}:
+        if suffix == ".zip":
+            data = file_storage.read()
+            class _MemFile:
+                filename = getattr(file_storage, "filename", "upload.zip")
+                def read(self):
+                    return data
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = [name for name in zf.namelist() if not name.endswith("/")]
+                has_csv = any(name.lower().endswith(".csv") for name in names)
+                has_npy = any(name.lower().endswith(".npy") for name in names)
+            if has_csv and not has_npy:
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    csv_names = sorted([
+                        name for name in zf.namelist()
+                        if name.lower().endswith(".csv")
+                        and not name.endswith("/")
+                        and "__macosx" not in name.lower()
+                    ])
+                    if not csv_names:
+                        raise ValueError("Arhiva ZIP nu conține CSV valid.")
+                    raw = zf.read(csv_names[0])
+                class _CsvFile:
+                    filename = csv_names[0]
+                    def read(self):
+                        return raw
+                info = inspect_csv_file(_CsvFile())
+                info["type"] = "zip_csv_collection"
+                info["zip_path"] = csv_names[0]
+                return info
+            return inspect_npy_file(_MemFile())
         return inspect_npy_file(file_storage)
 
-    raise ValueError("Pentru inspectare sunt acceptate doar fișiere .csv, .npy sau .zip.")
-
+    raise ValueError("Sunt acceptate doar fișiere .csv, .npy sau .zip pentru inspectare.")
 
 def _zip_npy_names(zf: zipfile.ZipFile) -> list[str]:
     return [
@@ -1262,18 +1312,40 @@ def save_uploaded_dataset(
         index_detection = "indice dedus strict din numele fișierului .npy; valorile sunt citite direct din array"
 
     else:
-        df, detected_indices, bands_df, zip_kind = _npy_zip_to_pixel_dataframe(
-            file_storage=file_storage,
-            roi_name=roi_name,
-            start_date=start_date,
-        )
+        # ZIP poate conține fie CSV, fie fișiere NPY. Detectăm întâi conținutul.
+        zip_data = file_storage.read()
 
-        if zip_kind == "npy_zip_bands":
-            original_input_type = "spectral_bands_npy_zip"
-            index_detection = "calculat automat din fișierele NIR/RED/GREEN/BLUE/SWIR din ZIP"
+        class _MemFile:
+            filename = getattr(file_storage, "filename", "upload.zip")
+            def read(self):
+                return zip_data
+
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            names = [name for name in zf.namelist() if not name.endswith("/")]
+            has_csv = any(name.lower().endswith(".csv") for name in names)
+            has_npy = any(name.lower().endswith(".npy") for name in names)
+
+        if has_csv and not has_npy:
+            df, detected_indices, bands_df, zip_kind = _csv_zip_to_dataframes(_MemFile())
+            if zip_kind == "csv_zip_bands":
+                original_input_type = "spectral_bands_csv_zip"
+                index_detection = "calculat automat din CSV-ul cu benzi din ZIP"
+            else:
+                original_input_type = "spectral_indices_csv_zip"
+                index_detection = "din coloana index a CSV-ului din ZIP"
         else:
-            original_input_type = "spectral_indices_npy_zip"
-            index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
+            df, detected_indices, bands_df, zip_kind = _npy_zip_to_pixel_dataframe(
+                file_storage=_MemFile(),
+                roi_name=roi_name,
+                start_date=start_date,
+            )
+
+            if zip_kind == "npy_zip_bands":
+                original_input_type = "spectral_bands_npy_zip"
+                index_detection = "calculat automat din fișierele NIR/RED/GREEN/BLUE/SWIR din ZIP"
+            else:
+                original_input_type = "spectral_indices_npy_zip"
+                index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
 
     pixel_level = is_pixel_level_dataframe(df)
     roi_df = build_roi_timeseries_dataframe(df)
@@ -1310,7 +1382,7 @@ def save_uploaded_dataset(
     manifest = dict(record)
     manifest["message"] = (
         "Dataset cu benzi spectrale încărcat; indicii au fost calculați automat și salvați pentru analiză."
-        if original_input_type in {"spectral_bands_csv", "spectral_bands_npy_zip"}
+        if original_input_type in {"spectral_bands_csv", "spectral_bands_csv_zip", "spectral_bands_npy_zip"}
         else (
             "Dataset pixel-level validat și disponibil pentru analiză ROI-level și ML pe pixeli."
             if pixel_level
@@ -1354,7 +1426,7 @@ def save_uploaded_dataset(
         status=record["status"],
         message=(
             "Dataset încărcat, indicii au fost calculați din benzi și Cloud Run poate genera rezultatele ML."
-            if original_input_type in {"spectral_bands_csv", "spectral_bands_npy_zip"}
+            if original_input_type in {"spectral_bands_csv", "spectral_bands_csv_zip", "spectral_bands_npy_zip"}
             else (
                 "Dataset încărcat și standardizat. Așteaptă pornirea jobului Cloud Run pentru ML."
                 if pixel_level
@@ -1515,8 +1587,11 @@ def get_dataset_csv_bytes(dataset_id: str) -> tuple[bytes, str]:
 
 def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
     """
-    Generează un URL temporar pentru descărcarea CSV-ului direct din Cloud Storage,
-    fără ca App Engine să încarce fișierul mare în memorie.
+    Generează URL temporar pentru descărcare directă din Cloud Storage.
+
+    În App Engine/Cloud Run, credentialele implicite nu au mereu cheie privată locală.
+    De aceea folosim întâi generate_signed_url normal, iar dacă nu poate semna local,
+    încercăm semnarea prin IAM Credentials API.
     """
     dataset_id = normalize_dataset_id(dataset_id)
 
@@ -1528,7 +1603,6 @@ def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
 
     client = _storage_client()
     bucket = client.bucket(_bucket_name())
-
     blob = bucket.blob(_gcs_dataset_blob(dataset_id))
 
     if not blob.exists():
@@ -1536,15 +1610,58 @@ def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
 
     filename = f"{dataset_id}_indices_timeseries.csv"
 
-    signed_url = blob.generate_signed_url(
-        version="v4",
-        expiration=timedelta(minutes=15),
-        method="GET",
-        response_disposition=f'attachment; filename="{filename}"',
-    )
+    try:
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=15),
+            method="GET",
+            response_disposition=f'attachment; filename="{filename}"',
+        )
+        return signed_url, filename
+    except Exception as first_exc:
+        try:
+            import google.auth
+            from google.auth import iam
+            from google.auth.transport.requests import Request
 
-    return signed_url, filename
+            credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            request = Request()
+            credentials.refresh(request)
 
+            service_account_email = (
+                os.getenv("APP_ENGINE_SERVICE_ACCOUNT")
+                or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+                or getattr(credentials, "service_account_email", None)
+            )
+
+            if not service_account_email:
+                raise RuntimeError(
+                    "Nu pot determina service account-ul pentru semnarea URL-ului."
+                )
+
+            signer = iam.Signer(
+                request,
+                credentials,
+                service_account_email,
+            )
+
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=15),
+                method="GET",
+                response_disposition=f'attachment; filename="{filename}"',
+                credentials=signer,
+                service_account_email=service_account_email,
+            )
+            return signed_url, filename
+        except Exception as second_exc:
+            raise RuntimeError(
+                "Nu s-a putut genera signed URL pentru CSV. "
+                "Verifică rolul roles/iam.serviceAccountTokenCreator pentru service account-ul App Engine. "
+                f"Eroare inițială: {first_exc}; eroare IAM: {second_exc}"
+            )
 
 
 def delete_dataset(dataset_id: str) -> None:

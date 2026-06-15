@@ -1415,7 +1415,6 @@ def spectral_indices_page():
             <strong>Dataset:</strong> {dataset_name}<br><br>
             <strong>{selected_index}:</strong><br>
             {description}<br><br>
-            <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
           </div>
         </section>
 
@@ -1572,7 +1571,6 @@ def cross_index_analysis_page():
 
           <div class="method-box">
             <strong>Dataset:</strong> {dataset_name}<br>
-            <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
           </div>
         </section>
 
@@ -1704,8 +1702,7 @@ def methodology_page():
 
             <div class="method-box">
                 <strong>Dataset curent:</strong> {dataset_name}<br>
-                <a class="btn-link secondary" href="/datasets/{selected_dataset}/download">Descarcă CSV dataset</a>
-            </div>
+                </div>
         </section>
 
         <section class="card reveal active">
