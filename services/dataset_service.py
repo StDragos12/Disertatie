@@ -1586,13 +1586,9 @@ def get_dataset_csv_bytes(dataset_id: str) -> tuple[bytes, str]:
     return path.read_bytes(), f"{dataset_id}_indices_timeseries.csv"
 
 def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
-    """
-    Generează URL temporar pentru descărcare directă din Cloud Storage.
+    import google.auth
+    from google.auth.transport.requests import Request
 
-    În App Engine/Cloud Run, credentialele implicite nu au mereu cheie privată locală.
-    De aceea folosim întâi generate_signed_url normal, iar dacă nu poate semna local,
-    încercăm semnarea prin IAM Credentials API.
-    """
     dataset_id = normalize_dataset_id(dataset_id)
 
     if dataset_id == DEMO_DATASET_ID:
@@ -1603,6 +1599,7 @@ def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
 
     client = _storage_client()
     bucket = client.bucket(_bucket_name())
+
     blob = bucket.blob(_gcs_dataset_blob(dataset_id))
 
     if not blob.exists():
@@ -1610,58 +1607,27 @@ def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
 
     filename = f"{dataset_id}_indices_timeseries.csv"
 
-    try:
-        signed_url = blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(minutes=15),
-            method="GET",
-            response_disposition=f'attachment; filename="{filename}"',
-        )
-        return signed_url, filename
-    except Exception as first_exc:
-        try:
-            import google.auth
-            from google.auth import iam
-            from google.auth.transport.requests import Request
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
 
-            credentials, _ = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            request = Request()
-            credentials.refresh(request)
+    credentials.refresh(Request())
 
-            service_account_email = (
-                os.getenv("APP_ENGINE_SERVICE_ACCOUNT")
-                or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
-                or getattr(credentials, "service_account_email", None)
-            )
+    service_account_email = os.getenv(
+        "SIGNED_URL_SERVICE_ACCOUNT",
+        "343145196185-compute@developer.gserviceaccount.com",
+    )
 
-            if not service_account_email:
-                raise RuntimeError(
-                    "Nu pot determina service account-ul pentru semnarea URL-ului."
-                )
+    signed_url = blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(minutes=15),
+        method="GET",
+        service_account_email=service_account_email,
+        access_token=credentials.token,
+        response_disposition=f'attachment; filename="{filename}"',
+    )
 
-            signer = iam.Signer(
-                request,
-                credentials,
-                service_account_email,
-            )
-
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=15),
-                method="GET",
-                response_disposition=f'attachment; filename="{filename}"',
-                credentials=signer,
-                service_account_email=service_account_email,
-            )
-            return signed_url, filename
-        except Exception as second_exc:
-            raise RuntimeError(
-                "Nu s-a putut genera signed URL pentru CSV. "
-                "Verifică rolul roles/iam.serviceAccountTokenCreator pentru service account-ul App Engine. "
-                f"Eroare inițială: {first_exc}; eroare IAM: {second_exc}"
-            )
+    return signed_url, filename
 
 
 def delete_dataset(dataset_id: str) -> None:
