@@ -187,7 +187,7 @@ def _catalog_dataset_cards() -> str:
             f"/forecast-arima?dataset={dataset_id}&index={default_index}&roi={default_roi}"
         )
         json_link = (
-            f"/api/series?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+            f"/api/series?dataset={selected_dataset}&index=all&roi={selected_roi}"
         )
 
         cards += f"""
