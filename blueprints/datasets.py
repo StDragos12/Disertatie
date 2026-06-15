@@ -11,12 +11,14 @@ from services.dataset_service import (
     list_datasets,
     save_uploaded_dataset,
     get_dataset_csv_bytes,
+    get_dataset_csv_signed_url,
     delete_dataset,
-    inspect_npy_file,
+    inspect_dataset_file,
     has_pixel_level_data,
     update_dataset_status,
     normalize_dataset_id,
     get_dataset_record,
+    using_gcs,
 )
 from utils.nav import render_nav
 
@@ -220,15 +222,23 @@ def _npy_preview_html(info: dict | None) -> str:
         file_rows = ""
 
         for item in info.get("files", []):
+            detected = item.get("inferred_band") or item.get("inferred_index", "nedetectat")
+            kind = "Bandă" if item.get("inferred_band") else "Indice"
             file_rows += f"""
             <tr>
-                <td>{_esc(item.get("filename"))}</td>
-                <td>{_esc(item.get("inferred_index", "nedetectat"))}</td>
+                <td>{_esc(item.get("zip_path", item.get("filename")))}</td>
+                <td>{_esc(kind)}</td>
+                <td>{_esc(detected)}</td>
                 <td>{_esc(item.get("shape"))}</td>
                 <td>{_esc(item.get("valid_pixels", "-"))}</td>
                 <td>{'Da' if item.get("supported_for_upload") else 'Nu'}</td>
             </tr>
             """
+
+        bands_text = ", ".join(info.get("bands_detected", [])) or "nicio bandă detectată"
+        indices_text = ", ".join(info.get("indices_detected", [])) or "niciun indice detectat"
+        input_kind = info.get("input_kind", "-")
+        note = info.get("note", "")
 
         return f"""
         <section class="card reveal active">
@@ -237,13 +247,15 @@ def _npy_preview_html(info: dict | None) -> str:
 
             <div class="method-box">
                 <strong>Compatibil cu upload:</strong> {supported}<br>
+                <strong>Tip detectat:</strong> {_esc(input_kind)}<br>
                 <strong>Fișiere NPY găsite:</strong> {_esc(info.get("files_count"))}<br>
-                <strong>Fișiere compatibile:</strong> {_esc(info.get("supported_files"))}<br>
-                <strong>Indici detectați:</strong> {_esc(", ".join(info.get("indices_detected", [])) or "niciun indice detectat")}<br><br>
-
-                Criteriul de detectare este numele fișierelor din arhivă:
-                <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>,
-                <code>AVI.npy</code>, <code>EVI.npy</code>, <code>GNDVI.npy</code>.
+                <strong>Benzi detectate:</strong> {_esc(bands_text)}<br>
+                <strong>Indici detectați:</strong> {_esc(indices_text)}<br><br>
+                {_esc(note)}<br><br>
+                Pentru benzi se așteaptă: <code>NIR.npy</code>, <code>RED.npy</code>,
+                <code>GREEN.npy</code>, <code>BLUE.npy</code>, <code>SWIR.npy</code>.<br>
+                Pentru indici se așteaptă: <code>NDVI.npy</code>, <code>NDMI.npy</code>,
+                <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code>, <code>GNDVI.npy</code>.
             </div>
 
             <div class="table-wrap">
@@ -251,7 +263,8 @@ def _npy_preview_html(info: dict | None) -> str:
                     <thead>
                         <tr>
                             <th>Fișier</th>
-                            <th>Indice detectat</th>
+                            <th>Tip</th>
+                            <th>Detectat</th>
                             <th>Shape</th>
                             <th>Pixeli valizi</th>
                             <th>Compatibil</th>
@@ -264,9 +277,9 @@ def _npy_preview_html(info: dict | None) -> str:
         """
 
     advice = (
-        "Fișierul poate fi încărcat ca dataset NPY. Va fi convertit automat într-un CSV pixel-level."
+        "Fișierul poate fi încărcat ca dataset NPY cu indice deja calculat."
         if info.get("supported_for_upload")
-        else "Pentru upload NPY este necesar un array numeric 3D cu forma [timp, rânduri, coloane]."
+        else info.get("note") or "Pentru upload NPY este necesar un array numeric 3D cu forma [timp, rânduri, coloane]."
     )
 
     return f"""
@@ -275,8 +288,9 @@ def _npy_preview_html(info: dict | None) -> str:
         <h2>Rezultat inspectare NPY</h2>
 
         <div class="method-box">
-            <strong>Compatibil cu upload ML:</strong> {supported}<br>
-            <strong>Indice detectat din numele fișierului:</strong> {_esc(info.get("inferred_index", "nedetectat"))}<br><br>
+            <strong>Compatibil cu upload:</strong> {supported}<br>
+            <strong>Indice detectat:</strong> {_esc(info.get("inferred_index", "nedetectat"))}<br>
+            <strong>Bandă detectată:</strong> {_esc(info.get("inferred_band", "-"))}<br><br>
             {_esc(advice)}
         </div>
 
@@ -288,6 +302,48 @@ def _npy_preview_html(info: dict | None) -> str:
     </section>
     """
 
+
+
+def _csv_preview_html(info: dict | None) -> str:
+    if not info:
+        return ""
+
+    supported = "Da" if info.get("supported_for_upload") else "Nu"
+    input_kind = info.get("input_kind", "-")
+    columns = ", ".join(info.get("columns", [])) or "-"
+    rois = ", ".join(info.get("rois", [])) or "-"
+    indices = ", ".join(info.get("indices_detected", [])) or "-"
+    bands = ", ".join(info.get("bands_detected", [])) or "-"
+    pixel_level = "Da" if info.get("pixel_level") else "Nu"
+    note = info.get("note", "")
+
+    return f"""
+    <section class="card reveal active">
+        <div class="card-top-line"></div>
+        <h2>Rezultat inspectare CSV</h2>
+
+        <div class="method-box">
+            <strong>Compatibil cu upload:</strong> {supported}<br>
+            <strong>Tip detectat:</strong> {_esc(input_kind)}<br>
+            <strong>Rânduri valide:</strong> {_esc(info.get("rows", "-"))}<br>
+            <strong>Pixel-level:</strong> {pixel_level}<br>
+            <strong>Interval temporal:</strong> {_esc(info.get("date_min", "-"))} – {_esc(info.get("date_max", "-"))}<br>
+            <strong>ROI-uri:</strong> {_esc(rois)}<br>
+            <strong>Benzi detectate:</strong> {_esc(bands)}<br>
+            <strong>Indici detectați / calculați:</strong> {_esc(indices)}<br><br>
+            {_esc(note)}
+        </div>
+
+        <div class="table-wrap">
+            <table class="stats-table">
+                <tbody>
+                    <tr><td>Fișier</td><td>{_esc(info.get("filename", "-"))}</td></tr>
+                    <tr><td>Coloane</td><td>{_esc(columns)}</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+    """
 
 def _upload_message(record: dict, cloud_run_started: bool, operation_name: str | None = None) -> str:
     dataset_id = record["dataset_id"]
@@ -356,7 +412,7 @@ def _upload_form_html() -> str:
             <div>
                 <h1>Dataset-uri utilizator</h1>
                 <p class="muted">
-                    Încarcă un CSV, un NPY 3D sau un ZIP cu fișiere NPY.
+                    Încarcă CSV cu indici, CSV cu benzi spectrale sau ZIP/NPY cu date 3D.
                 </p>
             </div>
         </div>
@@ -410,10 +466,7 @@ def _upload_form_html() -> str:
                 </div>
 
                 <div class="dataset-format-note">
-                    NPY acceptat: <code>[timp, rânduri, coloane]</code>.
-                    Numele fișierului trebuie să conțină indicele:
-                    <code>NDVI</code>, <code>NDMI</code>, <code>SAVI</code>,
-                    <code>AVI</code>, <code>EVI</code> sau <code>GNDVI</code>.
+                    Formate acceptate: CSV cu <code>date,roi,index,value</code>, CSV cu benzi <code>nir,red,green,blue,swir</code>, sau ZIP NPY cu <code>NIR/RED/GREEN/BLUE/SWIR</code> ori <code>NDVI/NDMI/SAVI/AVI/EVI/GNDVI</code>.
                 </div>
 
                 <div class="dataset-submit-row">
@@ -430,28 +483,33 @@ def _upload_form_html() -> str:
 
 def _inspect_form_html() -> str:
     return """
-    <section class="card reveal active compact-card">
+    <section class="card reveal active compact-card dataset-inspect-card">
         <div class="card-top-line"></div>
-        <h2>Inspectare NPY / ZIP</h2>
-        <p class="muted">
-            Folosește această opțiune pentru a verifica forma unui fișier NPY sau conținutul unei arhive ZIP înainte de upload.
-        </p>
 
-        <form method="post" enctype="multipart/form-data" class="inspect-form">
-            <input type="hidden" name="action" value="inspect_npy">
+        <div class="section-heading inspect-heading">
+            <div>
+                <h2>Inspectare CSV / NPY / ZIP</h2>
+                <p class="muted">
+                    Verifică rapid tipul fișierului, coloanele detectate, shape-ul NPY și compatibilitatea cu platforma.
+                </p>
+            </div>
+        </div>
 
-            <div class="form-field">
-                <label for="npy_preview_file">Fișier NPY sau ZIP</label>
+        <form method="post" enctype="multipart/form-data" class="inspect-form inspect-inline-form">
+            <input type="hidden" name="action" value="inspect_file">
+
+            <div class="inspect-file-field">
+                <label for="preview_file">Fișier CSV, NPY sau ZIP</label>
                 <input
-                    id="npy_preview_file"
-                    name="npy_preview_file"
+                    id="preview_file"
+                    name="preview_file"
                     type="file"
-                    accept=".npy,.zip"
+                    accept=".csv,.npy,.zip"
                     required
                 >
             </div>
 
-            <button type="submit" class="btn-link secondary">
+            <button type="submit" class="btn-link secondary inspect-submit-btn">
                 Inspectează fișierul
             </button>
         </form>
@@ -467,27 +525,37 @@ def _dataset_formats_help_html() -> str:
 
         <div class="dataset-format-grid">
             <div class="format-box">
-                <h3>CSV ROI-level</h3>
-                <code>date,roi,index,value</code>
-                <p class="muted">
-                    Potrivit pentru analiză temporală, Cross-Index și forecast.
-                </p>
-            </div>
-
-            <div class="format-box">
-                <h3>CSV pixel-level</h3>
+                <h3>CSV cu indici</h3>
+                <code>date,roi,index,value</code><br>
                 <code>date,roi,index,pixel_id,row,col,value</code>
                 <p class="muted">
-                    Necesar pentru ML pe pixeli, K-Means, Isolation Forest și hărți.
+                    Valorile indicilor sunt deja calculate. Platforma le folosește direct.
                 </p>
             </div>
 
             <div class="format-box">
-                <h3>NPY / ZIP NPY</h3>
-                <code>[timp, rânduri, coloane]</code>
+                <h3>CSV cu benzi</h3>
+                <code>date,roi,pixel_id,row,col,nir,red,green,blue,swir</code>
                 <p class="muted">
-                    Pentru ZIP, denumește fișierele <code>NDVI.npy</code>, <code>NDMI.npy</code>,
-                    <code>SAVI.npy</code>, <code>AVI.npy</code>, <code>EVI.npy</code> sau <code>GNDVI.npy</code>.
+                    Platforma calculează automat NDVI, NDMI, SAVI, EVI, GNDVI și AVI.
+                </p>
+            </div>
+
+            <div class="format-box">
+                <h3>ZIP NPY cu benzi</h3>
+                <code>parcela1/NIR.npy</code>, <code>RED.npy</code>, <code>GREEN.npy</code>,
+                <code>BLUE.npy</code>, <code>SWIR.npy</code>
+                <p class="muted">
+                    Fiecare bandă trebuie să fie array 3D: <code>[timp, rânduri, coloane]</code>.
+                </p>
+            </div>
+
+            <div class="format-box">
+                <h3>ZIP/NPY cu indici</h3>
+                <code>NDVI.npy</code>, <code>NDMI.npy</code>, <code>SAVI.npy</code>,
+                <code>AVI.npy</code>, <code>EVI.npy</code>, <code>GNDVI.npy</code>
+                <p class="muted">
+                    Valorile sunt citite direct din array. Pixelul este mapat prin row/col.
                 </p>
             </div>
         </div>
@@ -504,10 +572,17 @@ def datasets_page():
         action = request.form.get("action", "upload")
 
         try:
-            if action == "inspect_npy":
-                uploaded_file = request.files.get("npy_preview_file")
-                info = inspect_npy_file(uploaded_file)
-                preview_html = _npy_preview_html(info)
+            if action in {"inspect_dataset", "inspect_npy"}:
+                uploaded_file = (
+                    request.files.get("dataset_preview_file")
+                    or request.files.get("npy_preview_file")
+                )
+                info = inspect_dataset_file(uploaded_file)
+
+                if info.get("type") == "csv_file":
+                    preview_html = _csv_preview_html(info)
+                else:
+                    preview_html = _npy_preview_html(info)
 
             else:
                 display_name = request.form.get("display_name", "Dataset utilizator")
@@ -653,6 +728,12 @@ def datasets_page():
 
 @datasets_bp.route("/datasets/<dataset_id>/download")
 def download_dataset_csv(dataset_id: str):
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if using_gcs() and dataset_id != DEMO_DATASET_ID:
+        signed_url, _ = get_dataset_csv_signed_url(dataset_id)
+        return redirect(signed_url)
+
     data, filename = get_dataset_csv_bytes(dataset_id)
 
     return send_file(

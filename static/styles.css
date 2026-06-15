@@ -1802,3 +1802,166 @@ body.app-shell {
     width: 100%;
   }
 }
+
+.dataset-upload-card,
+.dataset-inspect-card,
+.compact-card {
+  max-width: 980px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.dataset-upload-card {
+  padding: 28px;
+}
+
+.dataset-single-form {
+  padding: 22px 24px;
+  gap: 16px;
+}
+
+.dataset-row-field label,
+.inspect-file-field label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dataset-row-field input,
+.inspect-file-field input {
+  width: 100%;
+}
+
+.dataset-format-note {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  padding: 13px 15px;
+}
+
+.dataset-submit-row {
+  margin-top: 4px;
+}
+
+.dataset-submit-row .btn-primary {
+  min-width: 175px;
+  height: 44px;
+}
+
+/* Inspect form: input + button pe aceeași linie */
+.dataset-inspect-card {
+  padding: 24px 28px;
+}
+
+.inspect-heading {
+  margin-bottom: 18px;
+}
+
+.inspect-heading h2 {
+  margin-bottom: 6px;
+}
+
+.inspect-heading p {
+  margin: 0;
+  max-width: 720px;
+}
+
+.inspect-inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.inspect-file-field {
+  min-width: 0;
+}
+
+.inspect-file-field input[type="file"] {
+  height: 42px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(2, 8, 23, 0.72);
+  color: var(--text);
+}
+
+.inspect-submit-btn {
+  height: 42px;
+  min-width: 165px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  margin: 0;
+}
+
+/* Preview CSV/NPY mai aerisit */
+.dataset-preview-card,
+.card:has(h2:nth-child(1)) {
+  overflow: hidden;
+}
+
+.stats-table {
+  font-size: 0.92rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.card .method-box {
+  line-height: 1.55;
+}
+
+.method-box code,
+.dataset-format-note code {
+  display: inline-block;
+  margin: 2px 2px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: rgba(2, 8, 23, 0.76);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  color: #dbeafe;
+  font-weight: 700;
+}
+
+/* Tabel dataseturi: mai curat */
+.stats-table th,
+.stats-table td {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+
+.dataset-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.dataset-actions .btn-link {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Responsive */
+@media (max-width: 760px) {
+  .inspect-inline-form {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .inspect-submit-btn {
+    width: 100%;
+  }
+
+  .dataset-upload-card,
+  .dataset-inspect-card,
+  .compact-card {
+    padding: 20px;
+  }
+}

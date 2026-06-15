@@ -5,7 +5,7 @@ import os
 import re
 import unicodedata
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 
 import numpy as np
@@ -27,10 +27,13 @@ LOCAL_DATASET_DIR = Path("data") / "user_datasets"
 DATASETS_INDEX_BLOB = "user_datasets/index.json"
 STATUS_FILENAME = "status.json"
 ROI_TIMESERIES_FILENAME = "roi_timeseries.csv"
+BANDS_TIMESERIES_FILENAME = "bands_timeseries.csv"
 REQUIRED_COLUMNS = {"date", "roi", "index", "value"}
 PIXEL_COLUMNS = {"pixel_id", "row", "col"}
 SUPPORTED_UPLOAD_EXTENSIONS = {".csv", ".npy", ".zip"}
 KNOWN_SPECTRAL_INDICES = {"NDVI", "NDMI", "SAVI", "AVI", "EVI", "GNDVI"}
+SUPPORTED_BANDS = ["NIR", "RED", "GREEN", "BLUE", "SWIR"]
+REQUIRED_BAND_COLUMNS = {"date", "roi", "pixel_id", "row", "col", "nir", "red", "green", "blue", "swir"}
 
 
 
@@ -74,6 +77,10 @@ def _local_roi_dataset_path(dataset_id: str) -> Path:
     return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / ROI_TIMESERIES_FILENAME
 
 
+def _local_bands_dataset_path(dataset_id: str) -> Path:
+    return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / BANDS_TIMESERIES_FILENAME
+
+
 def _local_manifest_path(dataset_id: str) -> Path:
     return LOCAL_DATASET_DIR / normalize_dataset_id(dataset_id) / "manifest.json"
 
@@ -84,6 +91,10 @@ def _gcs_dataset_blob(dataset_id: str) -> str:
 
 def _gcs_roi_dataset_blob(dataset_id: str) -> str:
     return f"user_datasets/{normalize_dataset_id(dataset_id)}/{ROI_TIMESERIES_FILENAME}"
+
+
+def _gcs_bands_dataset_blob(dataset_id: str) -> str:
+    return f"user_datasets/{normalize_dataset_id(dataset_id)}/{BANDS_TIMESERIES_FILENAME}"
 
 
 def _gcs_manifest_blob(dataset_id: str) -> str:
@@ -314,6 +325,159 @@ def validate_indices_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
+
+
+
+def has_band_columns(df: pd.DataFrame) -> bool:
+    cols = {str(c).strip().lower() for c in df.columns}
+    return REQUIRED_BAND_COLUMNS.issubset(cols)
+
+
+def _safe_divide(numerator, denominator):
+    numerator = np.asarray(numerator, dtype=float)
+    denominator = np.asarray(denominator, dtype=float)
+    return np.divide(
+        numerator,
+        denominator,
+        out=np.full_like(numerator, np.nan, dtype=float),
+        where=np.abs(denominator) > 1e-9,
+    )
+
+
+def calculate_index_arrays_from_bands(
+    nir: np.ndarray,
+    red: np.ndarray,
+    green: np.ndarray,
+    blue: np.ndarray,
+    swir: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Calculează indicii spectrali din benzi aliniate pe aceeași grilă.
+
+    Toate benzile trebuie să aibă aceeași formă, de regulă:
+      [timp, rânduri, coloane]
+    """
+    nir = np.asarray(nir, dtype=float)
+    red = np.asarray(red, dtype=float)
+    green = np.asarray(green, dtype=float)
+    blue = np.asarray(blue, dtype=float)
+    swir = np.asarray(swir, dtype=float)
+
+    shapes = {arr.shape for arr in [nir, red, green, blue, swir]}
+    if len(shapes) != 1:
+        raise ValueError(
+            "Benzile NIR, RED, GREEN, BLUE și SWIR trebuie să aibă același shape. "
+            f"Shape-uri detectate: {sorted(str(shape) for shape in shapes)}"
+        )
+
+    ndvi = _safe_divide(nir - red, nir + red)
+    ndmi = _safe_divide(nir - swir, nir + swir)
+    savi = _safe_divide((nir - red) * 1.5, nir + red + 0.5)
+    evi = _safe_divide(2.5 * (nir - red), nir + 6 * red - 7.5 * blue + 1)
+    gndvi = _safe_divide(nir - green, nir + green)
+
+    avi_raw = nir * (1 - red) * (nir - red)
+    avi = np.cbrt(np.maximum(avi_raw, 0))
+
+    return {
+        "NDVI": ndvi,
+        "NDMI": ndmi,
+        "SAVI": savi,
+        "EVI": evi,
+        "GNDVI": gndvi,
+        "AVI": avi,
+    }
+
+
+def validate_bands_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Validează CSV cu benzi spectrale pixel-level.
+
+    Format acceptat:
+      date, roi, pixel_id, row, col, nir, red, green, blue, swir
+    """
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    missing = REQUIRED_BAND_COLUMNS - set(df.columns)
+    if missing:
+        raise ValueError(
+            "CSV-ul cu benzi trebuie să conțină coloanele: "
+            "date, roi, pixel_id, row, col, nir, red, green, blue, swir. "
+            f"Lipsesc: {', '.join(sorted(missing))}."
+        )
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["roi"] = df["roi"].astype(str).str.strip().str.lower()
+    df["pixel_id"] = df["pixel_id"].astype(str).str.strip()
+    df["row"] = pd.to_numeric(df["row"], errors="coerce").astype("Int64")
+    df["col"] = pd.to_numeric(df["col"], errors="coerce").astype("Int64")
+
+    for band in ["nir", "red", "green", "blue", "swir"]:
+        df[band] = pd.to_numeric(df[band], errors="coerce")
+
+    df = df.dropna(subset=["date", "roi", "pixel_id", "row", "col", "nir", "red", "green", "blue", "swir"])
+    df = df[(df["roi"] != "") & (df["pixel_id"] != "")]
+
+    if df.empty:
+        raise ValueError("CSV-ul cu benzi nu conține observații valide după curățare.")
+
+    df["row"] = df["row"].astype(int)
+    df["col"] = df["col"].astype(int)
+
+    return (
+        df.groupby(["date", "roi", "pixel_id", "row", "col"], as_index=False)[["nir", "red", "green", "blue", "swir"]]
+        .mean()
+        .sort_values(["roi", "pixel_id", "date"])
+    )
+
+
+def bands_dataframe_to_indices_dataframe(bands_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transformă CSV-ul cu benzi în formatul standard folosit de restul platformei:
+      date, roi, index, pixel_id, row, col, value
+    """
+    bands_df = validate_bands_dataframe(bands_df)
+
+    nir = bands_df["nir"].to_numpy(dtype=float)
+    red = bands_df["red"].to_numpy(dtype=float)
+    green = bands_df["green"].to_numpy(dtype=float)
+    blue = bands_df["blue"].to_numpy(dtype=float)
+    swir = bands_df["swir"].to_numpy(dtype=float)
+
+    index_values = calculate_index_arrays_from_bands(nir, red, green, blue, swir)
+
+    base_cols = bands_df[["date", "roi", "pixel_id", "row", "col"]].copy()
+    frames = []
+
+    for index_name, values in index_values.items():
+        frame = base_cols.copy()
+        frame["index"] = index_name
+        frame["value"] = values.astype(float)
+        frames.append(frame[["date", "roi", "index", "pixel_id", "row", "col", "value"]])
+
+    return validate_indices_dataframe(pd.concat(frames, ignore_index=True))
+
+
+def infer_band_from_filename(filename: str) -> str:
+    name = Path(str(filename or "")).name.upper()
+
+    aliases = {
+        "NIR": ["NIR", "B8", "B08"],
+        "RED": ["RED", "B4", "B04"],
+        "GREEN": ["GREEN", "B3", "B03"],
+        "BLUE": ["BLUE", "B2", "B02"],
+        "SWIR": ["SWIR", "B11", "B12"],
+    }
+
+    for band_name, patterns in aliases.items():
+        if any(pattern in name for pattern in patterns):
+            return band_name
+
+    raise ValueError(
+        "Nu s-a putut deduce banda spectrală din numele fișierului. "
+        "Folosește nume de tip NIR.npy, RED.npy, GREEN.npy, BLUE.npy sau SWIR.npy."
+    )
 
 def as_roi_level_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = validate_indices_dataframe(df)
@@ -647,8 +811,10 @@ def _inspect_npy_array(arr: np.ndarray, filename: str) -> dict:
 def inspect_npy_file(file_storage) -> dict:
     """
     Inspectează fie un .npy singular, fie un .zip cu mai multe .npy.
-    Pentru .zip, criteriul de identificare a indicelui este numele fișierului:
-    NDVI.npy, NDMI.npy, SAVI.npy etc.
+
+    ZIP-ul poate conține:
+    - indici calculați: NDVI.npy, NDMI.npy, SAVI.npy, AVI.npy, EVI.npy, GNDVI.npy
+    - benzi spectrale: NIR.npy, RED.npy, GREEN.npy, BLUE.npy, SWIR.npy
     """
     if file_storage is None or not getattr(file_storage, "filename", ""):
         raise ValueError("Nu a fost selectat niciun fișier .npy sau .zip.")
@@ -658,13 +824,29 @@ def inspect_npy_file(file_storage) -> dict:
 
     if suffix == ".npy":
         arr = np.load(file_storage, allow_pickle=False)
-        return _inspect_npy_array(arr, filename)
+        info = _inspect_npy_array(arr, filename)
+        try:
+            info["inferred_band"] = infer_band_from_filename(filename)
+            info["input_kind"] = "single_band_npy"
+            info["supported_for_upload"] = False
+            info["note"] = "Un singur NPY cu bandă nu este suficient pentru calculul tuturor indicilor. Folosește ZIP cu NIR/RED/GREEN/BLUE/SWIR."
+        except ValueError:
+            info["input_kind"] = "single_index_npy"
+        return info
 
     if suffix == ".zip":
         data = file_storage.read()
         files_info = []
+        band_files = []
+        index_files = []
+
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            npy_names = [name for name in zf.namelist() if name.lower().endswith(".npy") and not name.endswith("/")]
+            npy_names = [
+                name for name in zf.namelist()
+                if name.lower().endswith(".npy")
+                and not name.endswith("/")
+                and "__macosx" not in name.lower()
+            ]
             if not npy_names:
                 raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
 
@@ -674,62 +856,322 @@ def inspect_npy_file(file_storage) -> dict:
                 item = _inspect_npy_array(arr, short_name)
                 item["zip_path"] = name
                 item["inferred_roi"] = infer_roi_from_zip_member(name, default_roi="")
+
+                try:
+                    band = infer_band_from_filename(short_name)
+                    item["inferred_band"] = band
+                    band_files.append(item)
+                except ValueError:
+                    pass
+
+                inferred_index = item.get("inferred_index")
+                if inferred_index and inferred_index != "nedetectat":
+                    index_files.append(item)
+
                 files_info.append(item)
 
-        supported_files = [item for item in files_info if item.get("supported_for_upload")]
-        indices = []
-        for item in supported_files:
-            inferred = item.get("inferred_index")
-            if inferred and inferred != "nedetectat":
-                indices.append(inferred)
+        detected_bands = sorted(set(item.get("inferred_band") for item in band_files if item.get("inferred_band")))
+        detected_indices = sorted(set(item.get("inferred_index") for item in index_files if item.get("inferred_index") != "nedetectat"))
+        required_bands_present = all(band in detected_bands for band in SUPPORTED_BANDS)
+
+        if required_bands_present:
+            input_kind = "spectral_bands_npy_zip"
+            supported_for_upload = True
+            note = "ZIP cu benzi detectat. Platforma va calcula automat NDVI, NDMI, SAVI, EVI, GNDVI și AVI."
+        elif detected_indices:
+            input_kind = "spectral_indices_npy_zip"
+            supported_for_upload = True
+            note = "ZIP cu indici detectat. Platforma va folosi valorile indicilor existente în fișiere."
+        else:
+            input_kind = "unknown_npy_zip"
+            supported_for_upload = False
+            note = "Nu s-au detectat nici indici, nici set complet de benzi."
 
         return {
             "filename": filename,
             "type": "zip_npy_collection",
+            "input_kind": input_kind,
             "files_count": len(files_info),
-            "supported_files": len(supported_files),
-            "indices_detected": sorted(set(indices)),
-            "supported_for_upload": len(supported_files) > 0,
+            "supported_files": len([item for item in files_info if item.get("supported_for_upload")]),
+            "bands_detected": detected_bands,
+            "indices_detected": detected_indices,
+            "supported_for_upload": supported_for_upload,
+            "note": note,
             "files": files_info,
         }
 
     raise ValueError("Pentru inspectare sunt acceptate doar .npy sau .zip.")
 
+
+
+def inspect_csv_file(file_storage) -> dict:
+    """
+    Inspectează un CSV înainte de upload.
+
+    Acceptă:
+    1) CSV cu indici:
+       date, roi, index, value
+       date, roi, index, pixel_id, row, col, value
+
+    2) CSV cu benzi:
+       date, roi, pixel_id, row, col, nir, red, green, blue, swir
+    """
+    if file_storage is None or not getattr(file_storage, "filename", ""):
+        raise ValueError("Nu a fost selectat niciun fișier CSV.")
+
+    filename = file_storage.filename
+    suffix = Path(filename).suffix.lower()
+
+    if suffix != ".csv":
+        raise ValueError("Pentru inspectare CSV este acceptat doar un fișier .csv.")
+
+    raw_df = pd.read_csv(file_storage)
+    columns = [str(column) for column in raw_df.columns]
+
+    if raw_df.empty:
+        raise ValueError("CSV-ul este gol.")
+
+    if has_band_columns(raw_df):
+        bands_df = validate_bands_dataframe(raw_df)
+        rois = sorted(bands_df["roi"].dropna().astype(str).str.lower().unique().tolist())
+        date_min = pd.to_datetime(bands_df["date"]).min().strftime("%Y-%m-%d")
+        date_max = pd.to_datetime(bands_df["date"]).max().strftime("%Y-%m-%d")
+        return {
+            "filename": filename,
+            "type": "csv_file",
+            "input_kind": "spectral_bands_csv",
+            "supported_for_upload": True,
+            "rows": int(len(bands_df)),
+            "columns": columns,
+            "pixel_level": True,
+            "rois": rois,
+            "date_min": date_min,
+            "date_max": date_max,
+            "bands_detected": ["NIR", "RED", "GREEN", "BLUE", "SWIR"],
+            "indices_detected": sorted(SUPPORTED_INDICES),
+            "note": "CSV cu benzi detectat. Platforma va calcula automat NDVI, NDMI, SAVI, EVI, GNDVI și AVI.",
+        }
+
+    indices_df = validate_indices_dataframe(raw_df)
+    rois = sorted(indices_df["roi"].dropna().astype(str).str.lower().unique().tolist())
+    indices = sorted(indices_df["index"].dropna().astype(str).str.upper().unique().tolist())
+    date_min = pd.to_datetime(indices_df["date"]).min().strftime("%Y-%m-%d")
+    date_max = pd.to_datetime(indices_df["date"]).max().strftime("%Y-%m-%d")
+
+    return {
+        "filename": filename,
+        "type": "csv_file",
+        "input_kind": "spectral_indices_csv",
+        "supported_for_upload": True,
+        "rows": int(len(indices_df)),
+        "columns": columns,
+        "pixel_level": is_pixel_level_dataframe(indices_df),
+        "rois": rois,
+        "date_min": date_min,
+        "date_max": date_max,
+        "bands_detected": [],
+        "indices_detected": indices,
+        "note": "CSV cu indici detectat. Platforma va folosi valorile din coloana value.",
+    }
+
+
+def inspect_dataset_file(file_storage) -> dict:
+    """
+    Inspectează automat CSV, NPY sau ZIP.
+    """
+    if file_storage is None or not getattr(file_storage, "filename", ""):
+        raise ValueError("Nu a fost selectat niciun fișier CSV, NPY sau ZIP.")
+
+    suffix = Path(file_storage.filename).suffix.lower()
+
+    if suffix == ".csv":
+        return inspect_csv_file(file_storage)
+
+    if suffix in {".npy", ".zip"}:
+        return inspect_npy_file(file_storage)
+
+    raise ValueError("Pentru inspectare sunt acceptate doar fișiere .csv, .npy sau .zip.")
+
+
+def _zip_npy_names(zf: zipfile.ZipFile) -> list[str]:
+    return [
+        name
+        for name in zf.namelist()
+        if name.lower().endswith(".npy")
+        and not name.endswith("/")
+        and "__macosx" not in name.lower()
+    ]
+
+
+def _npy_zip_kind(npy_names: list[str]) -> str:
+    detected_bands = set()
+    detected_indices = set()
+
+    for name in npy_names:
+        short_name = Path(name).name
+        try:
+            detected_bands.add(infer_band_from_filename(short_name))
+        except ValueError:
+            pass
+        try:
+            detected_indices.add(infer_index_from_filename(short_name))
+        except ValueError:
+            pass
+
+    if all(band in detected_bands for band in SUPPORTED_BANDS):
+        return "bands"
+    if detected_indices:
+        return "indices"
+    raise ValueError(
+        "Arhiva ZIP nu conține fișiere NPY recunoscute. Pentru indici folosește NDVI.npy/NDMI.npy/etc.; "
+        "pentru benzi folosește NIR.npy, RED.npy, GREEN.npy, BLUE.npy și SWIR.npy."
+    )
+
+
+def _band_zip_to_indices_dataframe(
+    file_storage,
+    roi_name: str,
+    start_date: str,
+) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
+    """
+    Citește ZIP cu benzi NIR/RED/GREEN/BLUE/SWIR și calculează automat indicii.
+    """
+    data = file_storage.read()
+    frames = []
+    band_rows = []
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        npy_names = _zip_npy_names(zf)
+        if not npy_names:
+            raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
+
+        grouped: dict[str, dict[str, tuple[str, str]]] = {}
+
+        for name in sorted(npy_names):
+            short_name = Path(name).name
+            try:
+                band = infer_band_from_filename(short_name)
+            except ValueError:
+                continue
+            roi = infer_roi_from_zip_member(name, default_roi=roi_name)
+            grouped.setdefault(roi, {})[band] = (name, short_name)
+
+        if not grouped:
+            raise ValueError("Nu s-au detectat fișiere de benzi în ZIP.")
+
+        for roi, band_map in grouped.items():
+            missing = [band for band in SUPPORTED_BANDS if band not in band_map]
+            if missing:
+                raise ValueError(
+                    f"ROI-ul {roi} nu are toate benzile necesare. Lipsesc: {', '.join(missing)}. "
+                    "Sunt necesare NIR, RED, GREEN, BLUE și SWIR."
+                )
+
+            arrays = {}
+            for band in SUPPORTED_BANDS:
+                name, short_name = band_map[band]
+                arrays[band] = _load_npy_from_bytes(zf.read(name), short_name)
+
+            index_arrays = calculate_index_arrays_from_bands(
+                nir=arrays["NIR"],
+                red=arrays["RED"],
+                green=arrays["GREEN"],
+                blue=arrays["BLUE"],
+                swir=arrays["SWIR"],
+            )
+
+            # CSV sursă cu benzi pentru audit/preview: date, roi, pixel_id, row, col, nir, red, green, blue, swir
+            nir = np.asarray(arrays["NIR"], dtype=float)
+            red = np.asarray(arrays["RED"], dtype=float)
+            green = np.asarray(arrays["GREEN"], dtype=float)
+            blue = np.asarray(arrays["BLUE"], dtype=float)
+            swir = np.asarray(arrays["SWIR"], dtype=float)
+            dates = _monthly_dates(start_date, nir.shape[0])
+            valid_mask = np.isfinite(nir) | np.isfinite(red) | np.isfinite(green) | np.isfinite(blue) | np.isfinite(swir)
+            valid_pixels = np.argwhere(valid_mask.any(axis=0))
+
+            for r, c in valid_pixels:
+                pixel_number = int(r) * int(nir.shape[2]) + int(c)
+                pixel_id = f"p{pixel_number}"
+                for t, date in enumerate(dates):
+                    values = [nir[t, r, c], red[t, r, c], green[t, r, c], blue[t, r, c], swir[t, r, c]]
+                    if any(np.isfinite(v) for v in values):
+                        band_rows.append({
+                            "date": date,
+                            "roi": roi,
+                            "pixel_id": pixel_id,
+                            "row": int(r),
+                            "col": int(c),
+                            "nir": float(nir[t, r, c]),
+                            "red": float(red[t, r, c]),
+                            "green": float(green[t, r, c]),
+                            "blue": float(blue[t, r, c]),
+                            "swir": float(swir[t, r, c]),
+                        })
+
+            for index_name, arr in index_arrays.items():
+                frames.append(
+                    npy_to_pixel_dataframe(
+                        npy_array=arr,
+                        roi=roi,
+                        index_name=index_name,
+                        start_date=start_date,
+                    )
+                )
+
+    if not frames:
+        raise ValueError("Nu s-au putut calcula indicii din benzile încărcate.")
+
+    bands_df = validate_bands_dataframe(pd.DataFrame(band_rows)) if band_rows else pd.DataFrame()
+
+    return (
+        validate_indices_dataframe(pd.concat(frames, ignore_index=True)),
+        sorted(SUPPORTED_INDICES),
+        bands_df,
+    )
+
+
 def _npy_zip_to_pixel_dataframe(
     file_storage,
     roi_name: str,
     start_date: str,
-) -> tuple[pd.DataFrame, list[str]]:
+) -> tuple[pd.DataFrame, list[str], pd.DataFrame | None, str]:
     """
-    Citește o arhivă ZIP cu fișiere .npy și le convertește într-un singur CSV pixel-level.
+    Citește o arhivă ZIP cu fișiere .npy.
 
-    Reguli:
-    - numele fișierului .npy definește indicele spectral: NDVI.npy, NDMI.npy etc.
-    - dacă fișierul este în subfolder, ultimul folder înainte de fișier devine ROI:
-        data1/NDVI.npy -> roi=data1, index=NDVI
-        data2/NDMI.npy -> roi=data2, index=NDMI
-    - dacă ZIP-ul este flat:
-        NDVI.npy -> roi=roi_name introdus în formular
+    Acceptă două variante:
+    1) ZIP cu indici calculați: NDVI.npy, NDMI.npy etc.
+    2) ZIP cu benzi: NIR.npy, RED.npy, GREEN.npy, BLUE.npy, SWIR.npy
     """
     data = file_storage.read()
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        npy_names = _zip_npy_names(zf)
+        if not npy_names:
+            raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
+        kind = _npy_zip_kind(npy_names)
+
+    # resetăm stream-ul logic prin BytesIO separat pentru ramura aleasă
+    class _MemFile:
+        filename = getattr(file_storage, "filename", "upload.zip")
+        def read(self):
+            return data
+
+    if kind == "bands":
+        df, detected_indices, bands_df = _band_zip_to_indices_dataframe(
+            file_storage=_MemFile(),
+            roi_name=roi_name,
+            start_date=start_date,
+        )
+        return df, detected_indices, bands_df, "npy_zip_bands"
+
     frames = []
     detected_indices = []
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        npy_names = [
-            name
-            for name in zf.namelist()
-            if name.lower().endswith(".npy")
-            and not name.endswith("/")
-            and "__macosx" not in name.lower()
-        ]
-
-        if not npy_names:
-            raise ValueError("Arhiva ZIP nu conține fișiere .npy.")
-
         for name in sorted(npy_names):
             short_name = Path(name).name
-            inferred_index = infer_index_from_filename(name)
+            inferred_index = infer_index_from_filename(short_name)
             inferred_roi = infer_roi_from_zip_member(name, default_roi=roi_name)
 
             arr = _load_npy_from_bytes(zf.read(name), short_name)
@@ -749,6 +1191,8 @@ def _npy_zip_to_pixel_dataframe(
     return (
         validate_indices_dataframe(pd.concat(frames, ignore_index=True)),
         sorted(set(detected_indices)),
+        None,
+        "npy_zip_indices",
     )
 
 
@@ -776,13 +1220,35 @@ def save_uploaded_dataset(
         suffix += 1
 
     detected_indices = []
+    bands_df = None
 
     if suffix_ext == ".csv":
-        df = pd.read_csv(file_storage)
-        df = validate_indices_dataframe(df)
-        original_input_type = "csv"
-        index_detection = "din coloana index a CSV-ului"
+        raw_df = pd.read_csv(file_storage)
+
+        if has_band_columns(raw_df):
+            bands_df = validate_bands_dataframe(raw_df)
+            df = bands_dataframe_to_indices_dataframe(bands_df)
+            original_input_type = "spectral_bands_csv"
+            detected_indices = sorted(SUPPORTED_INDICES)
+            index_detection = "calculat automat din coloanele NIR, RED, GREEN, BLUE și SWIR"
+        else:
+            df = validate_indices_dataframe(raw_df)
+            original_input_type = "spectral_indices_csv"
+            index_detection = "din coloana index a CSV-ului"
+
     elif suffix_ext == ".npy":
+        # Un singur .npy este tratat ca indice deja calculat: NDVI.npy, NDMI.npy etc.
+        # Pentru benzi sunt necesare mai multe fișiere, deci se folosește ZIP.
+        try:
+            detected_band = infer_band_from_filename(file_storage.filename)
+            raise ValueError(
+                f"Ai încărcat un singur fișier de bandă ({detected_band}). "
+                "Pentru calculul indicilor din benzi trebuie ZIP cu NIR.npy, RED.npy, GREEN.npy, BLUE.npy și SWIR.npy."
+            )
+        except ValueError as exc:
+            if "Ai încărcat" in str(exc):
+                raise
+
         detected_index = infer_index_from_filename(file_storage.filename)
         arr = np.load(file_storage, allow_pickle=False)
         df = npy_to_pixel_dataframe(
@@ -791,27 +1257,34 @@ def save_uploaded_dataset(
             index_name=detected_index,
             start_date=start_date,
         )
-        original_input_type = "npy_3d"
+        original_input_type = "spectral_index_npy_3d"
         detected_indices = [detected_index]
-        index_detection = "dedus strict din numele fișierului .npy"
+        index_detection = "indice dedus strict din numele fișierului .npy; valorile sunt citite direct din array"
+
     else:
-        df, detected_indices = _npy_zip_to_pixel_dataframe(
+        df, detected_indices, bands_df, zip_kind = _npy_zip_to_pixel_dataframe(
             file_storage=file_storage,
             roi_name=roi_name,
             start_date=start_date,
         )
-        original_input_type = "npy_zip"
-        index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
+
+        if zip_kind == "npy_zip_bands":
+            original_input_type = "spectral_bands_npy_zip"
+            index_detection = "calculat automat din fișierele NIR/RED/GREEN/BLUE/SWIR din ZIP"
+        else:
+            original_input_type = "spectral_indices_npy_zip"
+            index_detection = "indice dedus din numele fișierelor; ROI dedus din subfolderele ZIP sau din câmpul implicit"
 
     pixel_level = is_pixel_level_dataframe(df)
     roi_df = build_roi_timeseries_dataframe(df)
 
     csv_text = df.to_csv(index=False)
     roi_csv_text = roi_df.to_csv(index=False)
+    bands_csv_text = bands_df.to_csv(index=False) if bands_df is not None and not bands_df.empty else None
 
     now = datetime.now(timezone.utc).isoformat()
-    rois = sorted(df["roi"].unique().tolist())
-    indices = sorted(df["index"].unique().tolist())
+    rois = sorted(df["roi"].dropna().astype(str).str.lower().unique().tolist())
+    indices = sorted(df["index"].dropna().astype(str).str.upper().unique().tolist())
 
     record = {
         "dataset_id": dataset_id,
@@ -829,14 +1302,24 @@ def save_uploaded_dataset(
         "roi_csv_path": f"user_datasets/{dataset_id}/{ROI_TIMESERIES_FILENAME}",
         "roi_rows": int(len(roi_df)),
     }
+
+    if bands_csv_text is not None:
+        record["bands_csv_path"] = f"user_datasets/{dataset_id}/{BANDS_TIMESERIES_FILENAME}"
+        record["bands_rows"] = int(len(bands_df))
+
     manifest = dict(record)
     manifest["message"] = (
-        "Dataset pixel-level validat și disponibil pentru analiză ROI-level și ML pe pixeli."
-        if pixel_level
-        else "Dataset ROI-level validat și disponibil pentru analiză, Cross-Index și forecast."
+        "Dataset cu benzi spectrale încărcat; indicii au fost calculați automat și salvați pentru analiză."
+        if original_input_type in {"spectral_bands_csv", "spectral_bands_npy_zip"}
+        else (
+            "Dataset pixel-level validat și disponibil pentru analiză ROI-level și ML pe pixeli."
+            if pixel_level
+            else "Dataset ROI-level validat și disponibil pentru analiză, Cross-Index și forecast."
+        )
     )
+
     if detected_indices:
-        manifest["detected_indices"] = detected_indices
+        manifest["detected_indices"] = sorted(set(detected_indices))
 
     if using_gcs():
         client = _storage_client()
@@ -847,6 +1330,10 @@ def save_uploaded_dataset(
         bucket.blob(_gcs_roi_dataset_blob(dataset_id)).upload_from_string(
             roi_csv_text, content_type="text/csv; charset=utf-8"
         )
+        if bands_csv_text is not None:
+            bucket.blob(_gcs_bands_dataset_blob(dataset_id)).upload_from_string(
+                bands_csv_text, content_type="text/csv; charset=utf-8"
+            )
         bucket.blob(_gcs_manifest_blob(dataset_id)).upload_from_string(
             json.dumps(manifest, ensure_ascii=False, indent=2),
             content_type="application/json; charset=utf-8",
@@ -856,6 +1343,8 @@ def save_uploaded_dataset(
         dataset_dir.mkdir(parents=True, exist_ok=True)
         (dataset_dir / "indices_timeseries.csv").write_text(csv_text, encoding="utf-8")
         (dataset_dir / ROI_TIMESERIES_FILENAME).write_text(roi_csv_text, encoding="utf-8")
+        if bands_csv_text is not None:
+            (dataset_dir / BANDS_TIMESERIES_FILENAME).write_text(bands_csv_text, encoding="utf-8")
         (dataset_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     _upsert_dataset_record(record)
@@ -864,17 +1353,23 @@ def save_uploaded_dataset(
         dataset_id=dataset_id,
         status=record["status"],
         message=(
-            "Dataset încărcat și standardizat. Așteaptă pornirea jobului Cloud Run pentru ML."
-            if pixel_level
-            else "Dataset ROI-level încărcat și disponibil pentru analiză temporală, Cross-Index și forecast."
+            "Dataset încărcat, indicii au fost calculați din benzi și Cloud Run poate genera rezultatele ML."
+            if original_input_type in {"spectral_bands_csv", "spectral_bands_npy_zip"}
+            else (
+                "Dataset încărcat și standardizat. Așteaptă pornirea jobului Cloud Run pentru ML."
+                if pixel_level
+                else "Dataset ROI-level încărcat și disponibil pentru analiză temporală, Cross-Index și forecast."
+            )
         ),
         extra={
             "input_type": record["input_type"],
+            "original_input_type": record["original_input_type"],
             "indices": indices,
             "rois": rois,
             "rows": int(len(df)),
             "roi_rows": int(len(roi_df)),
             "roi_csv_path": f"user_datasets/{dataset_id}/{ROI_TIMESERIES_FILENAME}",
+            **({"bands_rows": int(len(bands_df)), "bands_csv_path": f"user_datasets/{dataset_id}/{BANDS_TIMESERIES_FILENAME}"} if bands_csv_text is not None else {}),
         },
     )
 
@@ -1017,6 +1512,38 @@ def get_dataset_csv_bytes(dataset_id: str) -> tuple[bytes, str]:
     if not path.exists():
         raise FileNotFoundError(f"CSV-ul datasetului {dataset_id} nu există local.")
     return path.read_bytes(), f"{dataset_id}_indices_timeseries.csv"
+
+def get_dataset_csv_signed_url(dataset_id: str) -> tuple[str, str]:
+    """
+    Generează un URL temporar pentru descărcarea CSV-ului direct din Cloud Storage,
+    fără ca App Engine să încarce fișierul mare în memorie.
+    """
+    dataset_id = normalize_dataset_id(dataset_id)
+
+    if dataset_id == DEMO_DATASET_ID:
+        raise ValueError("Signed URL este folosit doar pentru dataseturi încărcate în Cloud Storage.")
+
+    if not using_gcs():
+        raise ValueError("Signed URL este disponibil doar când GCS_BUCKET_NAME este configurat.")
+
+    client = _storage_client()
+    bucket = client.bucket(_bucket_name())
+
+    blob = bucket.blob(_gcs_dataset_blob(dataset_id))
+
+    if not blob.exists():
+        raise FileNotFoundError(f"CSV-ul datasetului {dataset_id} nu există în Cloud Storage.")
+
+    filename = f"{dataset_id}_indices_timeseries.csv"
+
+    signed_url = blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(minutes=15),
+        method="GET",
+        response_disposition=f'attachment; filename="{filename}"',
+    )
+
+    return signed_url, filename
 
 
 
