@@ -98,7 +98,11 @@ def _dataset_action_links(dataset: dict) -> str:
     default_roi = "roi1" if dataset_id == DEMO_DATASET_ID else _first_or_default(rois, "parcela1")
     default_index = _first_or_default(indices, "NDVI")
 
-    analysis_url = f"/spectral-indices?dataset={_esc(dataset_id)}"
+    analysis_url = (
+    f"/spectral-indices?dataset={_esc(dataset_id)}"
+    f"&roi={_esc(default_roi)}"
+    f"&index=all"
+)
     ml_url = (
         f"/ml-features?dataset={_esc(dataset_id)}"
         f"&index={_esc(default_index)}"

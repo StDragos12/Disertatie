@@ -1274,9 +1274,6 @@ def ml_features_page():
         """,
     )
 
-
-
-
 @main_bp.route("/api/series")
 def api_series():
     selected_dataset = normalize_dataset_id(
@@ -1352,9 +1349,9 @@ def spectral_indices_page():
     dataset_options = build_dataset_options_html(selected_dataset)
     available_indices = list_indices(dataset_id=selected_dataset)
 
-    selected_index = request.args.get("index", "NDVI").upper()
-    if selected_index not in available_indices:
-        selected_index = available_indices[0] if available_indices else "NDVI"
+    selected_index = request.args.get("index", "all")
+    if selected_index.lower() not in {"all", "*"}:
+        selected_index = selected_index.upper()
 
     try:
         df = load_index_dataframe(selected_index, dataset_id=selected_dataset)
