@@ -168,7 +168,11 @@ def _catalog_dataset_cards() -> str:
         indices = dataset.get("indices") or []
 
         default_roi = rois[0] if rois else ("roi1" if dataset_id == DEMO_DATASET_ID else "parcela1")
-        default_index = indices[0] if indices else "NDVI"
+
+        # Pentru ML / forecast păstrăm un indice concret. Preferăm NDVI dacă există,
+        # ca să nu ajungem implicit pe AVI doar pentru că este primul alfabetic.
+        normalized_indices = [str(index_name).upper() for index_name in indices]
+        default_index = "NDVI" if "NDVI" in normalized_indices else (normalized_indices[0] if normalized_indices else "NDVI")
 
         rois_text = ", ".join(str(x).upper() for x in rois) if rois else "-"
         indices_text = ", ".join(str(x).upper() for x in indices) if indices else "-"
@@ -178,7 +182,7 @@ def _catalog_dataset_cards() -> str:
             f"&roi={default_roi}&pixels=500"
         )
         spectral_link = (
-            f"/spectral-indices?dataset={dataset_id}&index={default_index}&roi={default_roi}"
+            f"/spectral-indices?dataset={dataset_id}&index=all&roi={default_roi}"
         )
         temporal_link = (
             f"/stationarity?dataset={dataset_id}&index={default_index}&roi={default_roi}"
@@ -187,7 +191,7 @@ def _catalog_dataset_cards() -> str:
             f"/forecast-arima?dataset={dataset_id}&index={default_index}&roi={default_roi}"
         )
         json_link = (
-            f"/api/series?dataset={selected_dataset}&index=all&roi={selected_roi}"
+            f"/api/series?dataset={dataset_id}&index=all&roi={default_roi}"
         )
 
         cards += f"""
@@ -1274,6 +1278,9 @@ def ml_features_page():
         """,
     )
 
+
+
+
 @main_bp.route("/api/series")
 def api_series():
     selected_dataset = normalize_dataset_id(
@@ -1350,11 +1357,22 @@ def spectral_indices_page():
     available_indices = list_indices(dataset_id=selected_dataset)
 
     selected_index = request.args.get("index", "all")
-    if selected_index.lower() not in {"all", "*"}:
-        selected_index = selected_index.upper()
+    selected_index_normalized = selected_index.upper()
+
+    show_all_indices = selected_index.lower() in {"all", "*", ""}
+
+    if not show_all_indices and selected_index_normalized not in available_indices:
+        selected_index_normalized = "NDVI" if "NDVI" in available_indices else (available_indices[0] if available_indices else "NDVI")
 
     try:
-        df = load_index_dataframe(selected_index, dataset_id=selected_dataset)
+        if show_all_indices:
+            df = load_indices_dataframe(dataset_id=selected_dataset)
+            selected_index_label = "Toți indicii"
+            y_axis_title = "Valoare indice"
+        else:
+            df = load_index_dataframe(selected_index_normalized, dataset_id=selected_dataset)
+            selected_index_label = selected_index_normalized
+            y_axis_title = selected_index_normalized
     except Exception as exc:
         return render_template(
             "base.html",
@@ -1368,38 +1386,70 @@ def spectral_indices_page():
             """,
         )
 
+    selected_roi = request.args.get("roi")
+    if selected_roi:
+        selected_roi = selected_roi.lower()
+        df = df[df["roi"].astype(str).str.lower() == selected_roi].copy()
+
     options_html = ""
+    all_selected = "selected" if show_all_indices else ""
+    options_html += f"<option value='all' {all_selected}>Toți indicii</option>"
+
     for index_name in available_indices:
-        selected = "selected" if index_name == selected_index else ""
+        selected = "selected" if (not show_all_indices and index_name == selected_index_normalized) else ""
         options_html += f"<option value='{index_name}' {selected}>{index_name}</option>"
 
-    description = INDEX_DESCRIPTIONS.get(
-        selected_index,
-        "Indice spectral utilizat în analiza vegetației."
+    description = (
+        "Sunt afișate simultan toate seriile disponibile pentru datasetul selectat."
+        if show_all_indices
+        else INDEX_DESCRIPTIONS.get(
+            selected_index_normalized,
+            "Indice spectral utilizat în analiza vegetației."
+        )
     )
 
     fig = go.Figure()
 
-    for roi_name in df["roi"].unique():
-        sub = df[df["roi"] == roi_name].sort_values("date")
-        series = pd.Series(sub["value"].values, index=sub["date"])
-        smooth = smooth_series(series)
+    if show_all_indices:
+        grouped_iter = df.groupby(["index", "roi"])
+        for (index_name, roi_name), sub in grouped_iter:
+            sub = sub.sort_values("date")
+            series = pd.Series(sub["value"].values, index=sub["date"])
+            fig.add_trace(
+                go.Scatter(
+                    x=series.index,
+                    y=series.values,
+                    mode="lines",
+                    name=f"{index_name} – {roi_name}",
+                )
+            )
+    else:
+        for roi_name in df["roi"].unique():
+            sub = df[df["roi"] == roi_name].sort_values("date")
+            series = pd.Series(sub["value"].values, index=sub["date"])
+            smooth = smooth_series(series)
 
-        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name=f"{roi_name} raw"))
-        fig.add_trace(go.Scatter(x=smooth.index, y=smooth.values, mode="lines", name=f"{roi_name} trend", line=dict(width=4)))
+            fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name=f"{roi_name} raw"))
+            fig.add_trace(go.Scatter(x=smooth.index, y=smooth.values, mode="lines", name=f"{roi_name} trend", line=dict(width=4)))
 
     fig.update_layout(
-        title=f"Serie temporală {selected_index} – {dataset_name}",
+        title=f"Serie temporală {selected_index_label} – {dataset_name}",
         xaxis_title="Data",
-        yaxis_title=selected_index,
+        yaxis_title=y_axis_title,
+        hovermode="x unified",
     )
 
-    stats = df.groupby("roi")["value"].agg(["mean", "std", "min", "max"]).reset_index()
+    if show_all_indices:
+        stats = df.groupby(["index", "roi"])["value"].agg(["mean", "std", "min", "max"]).reset_index()
+    else:
+        stats = df.groupby("roi")["value"].agg(["mean", "std", "min", "max"]).reset_index()
+        stats.insert(0, "index", selected_index_normalized)
 
     table_rows = ""
     for _, row in stats.iterrows():
         table_rows += f"""
         <tr>
+          <td>{row['index']}</td>
           <td>{row['roi']}</td>
           <td>{round(float(row['mean']), 4)}</td>
           <td>{round(float(row['std']), 4)}</td>
@@ -1407,6 +1457,11 @@ def spectral_indices_page():
           <td>{round(float(row['max']), 4)}</td>
         </tr>
         """
+
+    roi_hidden_input = f"<input type='hidden' name='roi' value='{selected_roi}'>" if selected_roi else ""
+
+    json_roi = selected_roi or (df["roi"].astype(str).str.lower().iloc[0] if not df.empty else "roi1")
+    json_index = "all" if show_all_indices else selected_index_normalized
 
     return render_template(
         "base.html",
@@ -1426,6 +1481,8 @@ def spectral_indices_page():
               {dataset_options}
             </select>
 
+            {roi_hidden_input}
+
             <br><br>
 
             <label for="index"><strong>Selectează indicele spectral:</strong></label><br><br>
@@ -1436,18 +1493,19 @@ def spectral_indices_page():
 
           <div class="method-box">
             <strong>Dataset:</strong> {dataset_name}<br><br>
-            <strong>{selected_index}:</strong><br>
+            <strong>{selected_index_label}:</strong><br>
             {description}<br><br>
+            <a class="btn-link secondary" href="/api/series?dataset={selected_dataset}&index={json_index}&roi={json_roi}" target="_blank">JSON</a>
           </div>
         </section>
 
         {figure_card(
             fig,
-            f"{selected_index} – serie temporală",
+            f"{selected_index_label} – serie temporală",
             "Seria temporală este obținută prin calculul mediei valorilor pentru fiecare ROI și moment temporal.",
             section_id="spectral_index_fig",
             xaxis_title="Data",
-            yaxis_title=selected_index,
+            yaxis_title=y_axis_title,
         )}
 
         <section class="card reveal active">
@@ -1456,6 +1514,7 @@ def spectral_indices_page():
             <table class="stats-table">
               <thead>
                 <tr>
+                  <th>Indice</th>
                   <th>ROI</th>
                   <th>Mean</th>
                   <th>Std</th>
