@@ -1279,26 +1279,48 @@ def ml_features_page():
 
 @main_bp.route("/api/series")
 def api_series():
-    selected_dataset = normalize_dataset_id(request.args.get("dataset", DEMO_DATASET_ID))
-    selected_index = request.args.get("index", "NDVI").upper()
-    selected_roi = request.args.get("roi") or request.args.get("site") or "roi1"
-    selected_roi = selected_roi.lower()
+    selected_dataset = normalize_dataset_id(
+        request.args.get("dataset", DEMO_DATASET_ID)
+    )
+
+    selected_index = request.args.get("index", "all").upper()
+
+    selected_roi = (
+        request.args.get("roi")
+        or request.args.get("site")
+        or "roi1"
+    ).lower()
 
     try:
-        df = load_index_dataframe(selected_index, dataset_id=selected_dataset)
+        if selected_index in {"ALL", "*", ""}:
+            df = load_indices_dataframe(dataset_id=selected_dataset)
+        else:
+            df = load_index_dataframe(
+                selected_index,
+                dataset_id=selected_dataset,
+            )
+
         df = df[df["roi"].astype(str).str.lower() == selected_roi].copy()
+
         if df.empty:
             return jsonify({
                 "status": "error",
-                "message": f"Nu există date pentru {selected_index} - {selected_roi}.",
+                "message": f"Nu există date pentru ROI-ul {selected_roi}.",
                 "dataset": selected_dataset,
+                "roi": selected_roi,
+                "index": selected_index,
             }), 404
 
-        df = df.sort_values("date")
+        df = df.sort_values(["index", "date"])
+
         rows = []
+
         for _, row in df.iterrows():
+            date_value = pd.to_datetime(row["date"])
+
             rows.append({
-                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "date": date_value.strftime("%Y-%m-%d"),
+                "period": date_value.strftime("%Y-%m"),
                 "roi": str(row["roi"]),
                 "index": str(row["index"]).upper(),
                 "value": float(row["value"]),
@@ -1308,15 +1330,19 @@ def api_series():
             "status": "ok",
             "dataset": selected_dataset,
             "roi": selected_roi,
-            "index": selected_index,
+            "index": "ALL" if selected_index in {"ALL", "*", ""} else selected_index,
+            "indices": sorted(df["index"].astype(str).str.upper().unique().tolist()),
             "count": len(rows),
             "data": rows,
         })
+
     except Exception as exc:
         return jsonify({
             "status": "error",
             "message": str(exc),
             "dataset": selected_dataset,
+            "roi": selected_roi,
+            "index": selected_index,
         }), 500
 
 @main_bp.route("/spectral-indices")
